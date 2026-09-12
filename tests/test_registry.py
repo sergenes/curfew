@@ -95,6 +95,76 @@ def test_identity_for_unseen_mac_fails(reg: Registry) -> None:
         reg.set_identity("00:00:00:00:00:00", nickname="ghost")
 
 
+def test_merge_folds_old_record_into_new(reg: Registry) -> None:
+    old = "ce:46:a0:00:00:01"  # randomized wifi MAC, carries the identity
+    new = "94:18:65:00:00:02"  # real MAC after Private Wi-Fi Address is turned off
+    reg.record_scan([dev(old, ip="192.168.1.93")], now=T0)
+    reg.set_identity(old, nickname="Misha's iPad", owner="Michael", tags=["kids"], notes="bedtime 9pm")
+    reg.record_scan([dev(new, ip="192.168.1.77")], now=T0 + timedelta(days=1))
+
+    merged = reg.merge(old, new)
+
+    assert merged.mac == "94:18:65:00:00:02"
+    assert merged.nickname == "Misha's iPad"
+    assert merged.owner == "Michael"
+    assert merged.tags == ["kids"]
+    assert merged.notes == "bedtime 9pm"
+    assert merged.first_seen == T0  # the earlier sighting is kept
+    assert merged.last_ip == "192.168.1.77"  # the survivor's own live fields stay
+    assert reg.get(old) is None
+    # presence history moved across, so resolving the new MAC finds both sessions
+    assert len(reg.sessions(new)) == 2
+
+
+def test_merge_unions_tags_and_keeps_survivor_identity(reg: Registry) -> None:
+    old = "ce:46:a0:00:00:01"
+    new = "94:18:65:00:00:02"
+    reg.record_scan([dev(old), dev(new)], now=T0)
+    reg.set_identity(old, owner="Michael", tags=["kids", "tablet"])
+    reg.set_identity(new, nickname="iPad Pro", tags=["loaner"])
+
+    merged = reg.merge(old, new)
+
+    assert merged.nickname == "iPad Pro"  # survivor's own value wins over the old (empty) one
+    assert merged.owner == "Michael"  # survivor was empty, inherits from old
+    assert merged.tags == ["kids", "loaner", "tablet"]  # union, sorted
+
+
+def test_merge_moves_a_block_only_if_survivor_has_none(reg: Registry) -> None:
+    old = "ce:46:a0:00:00:01"
+    new = "94:18:65:00:00:02"
+    reg.record_scan([dev(old), dev(new, ip="192.168.1.77")], now=T0)
+    reg.set_override(old, allow=False, until=None, reason="bedtime")
+
+    merged = reg.merge(old, new)
+
+    overrides = reg.overrides()
+    assert old not in overrides
+    assert overrides[merged.mac].allow is False and overrides[merged.mac].reason == "bedtime"
+
+
+def test_merge_rejects_same_device(reg: Registry) -> None:
+    reg.record_scan([dev("ce:46:a0:00:00:01")], now=T0)
+    with pytest.raises(ValueError):
+        reg.merge("ce:46:a0:00:00:01", "CE-46-A0-00-00-01")
+
+
+def test_merge_requires_both_to_exist(reg: Registry) -> None:
+    reg.record_scan([dev("ce:46:a0:00:00:01")], now=T0)
+    with pytest.raises(KeyError):
+        reg.merge("ce:46:a0:00:00:01", "94:18:65:00:00:02")
+
+
+def test_forget_clears_block_and_pause(reg: Registry) -> None:
+    mac = "ce:46:a0:00:00:01"
+    reg.record_scan([dev(mac, ip="192.168.1.93")], now=T0)
+    reg.set_override(mac, allow=False, until=None)
+    reg.set_pause(mac, "192.168.1.93")
+    assert reg.forget(mac) is True  # no foreign-key error from leftover child rows
+    assert reg.get(mac) is None
+    assert reg.overrides() == {} and reg.pauses() == []
+
+
 def test_new_since_and_last_scan(reg: Registry) -> None:
     reg.record_scan([dev("aa:bb:cc:00:00:01")], now=T0)
     reg.record_scan([dev("aa:bb:cc:00:00:01"), dev("aa:bb:cc:00:00:02")], now=T0 + timedelta(days=3))

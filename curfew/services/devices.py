@@ -91,6 +91,15 @@ class DeviceService:
                 raise ValueError(f"nickname {nickname!r} is already used by {clash[0].mac}")
         return self.registry.set_identity(device.mac, nickname=nickname, owner=owner, tags=tags, notes=notes)
 
+    def merge(self, old: str, new: str) -> tuple[KnownDevice, KnownDevice]:
+        """Fold the `old` device record into `new` and remove `old`. Returns (old, merged)."""
+        old_dev = self.resolve(old)
+        new_dev = self.resolve(new)
+        if old_dev.mac == new_dev.mac:
+            raise ValueError(f"{old!r} and {new!r} resolve to the same device; nothing to merge")
+        merged = self.registry.merge(old_dev.mac, new_dev.mac)
+        return old_dev, merged
+
     def history(self, query: str, *, limit: int = 20) -> tuple[KnownDevice, list[PresenceSession]]:
         device = self.resolve(query)
         return device, self.registry.sessions(device.mac, limit=limit)

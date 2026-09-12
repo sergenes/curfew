@@ -410,6 +410,35 @@ def name(
 
 
 @app.command()
+def merge(
+    old: str = typer.Argument(help="The duplicate to remove: MAC, nickname, router name or IP."),
+    new: str = typer.Argument(help="The record to keep: MAC, nickname, router name or IP."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Merge one device record into another, then forget the old one.
+
+    Use it when the same device shows up twice, e.g. after it stops using a randomized
+    wifi MAC and rejoins with its real one. The new record keeps its own fields and
+    inherits the old nickname, owner, tags and history.
+    """
+    old_dev, new_dev = _run(lambda c: _async_value((c.devices.resolve(old), c.devices.resolve(new))))
+    if old_dev.mac == new_dev.mac:
+        console.print(f"[red]{old!r} and {new!r} are the same device; nothing to merge.[/red]")
+        raise typer.Exit(1)
+    console.print(
+        f"Merge [bold]{old_dev.display_name}[/bold] ({old_dev.mac}) "
+        f"into [bold]{new_dev.display_name}[/bold] ({new_dev.mac}) and forget the old record."
+    )
+    if not yes and not typer.confirm("Proceed?"):
+        raise typer.Exit(0)
+    _, merged = _run(lambda c: _async_value(c.devices.merge(old, new)))
+    console.print(
+        f"Merged into {merged.mac}: name={merged.display_name!r} owner={merged.owner!r} "
+        f"tags={merged.tags}. Removed {old_dev.mac}."
+    )
+
+
+@app.command()
 def history(
     device: str = typer.Argument(help="MAC, nickname, router name or IP."),
     limit: int = typer.Option(20, help="Number of sessions to show."),

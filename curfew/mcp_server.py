@@ -262,6 +262,23 @@ async def name_device(
     return _known(known, datetime.now(UTC))
 
 
+@server.tool(annotations=LOCAL_WRITE)
+async def merge_devices(old: str, new: str) -> dict[str, Any]:
+    """Merge one device record into another in the local registry, then forget the old one.
+
+    Use it when the same physical device appears twice, e.g. after it stops using a
+    randomized (private) wifi MAC and rejoins with its real one. `new` is the survivor;
+    it keeps its own fields and inherits the old nickname, owner, tags and history.
+    Each of `old` and `new` is a MAC, nickname, router name or IP.
+    """
+    svc = state.devices()
+    try:
+        _, merged = svc.merge(old, new)
+    except (LookupError, ValueError) as err:
+        raise ToolError(str(err)) from err
+    return _known(merged, datetime.now(UTC))
+
+
 # -- groups and access ----------------------------------------------------------
 
 

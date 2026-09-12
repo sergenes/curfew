@@ -42,6 +42,7 @@ uv run curfew new --since 7d      # devices first seen in the window
 uv run curfew known --online      # everything ever seen (--owner X, --tag Y)
 uv run curfew name "iPhone" --nickname "Sam's phone" --owner Sam --tags kid,phone
 uv run curfew name CE:46:A0:00:00:09 --nickname "Sam's iPad" --owner Sam
+uv run curfew merge CE:46:A0:00:00:09 30:C0:AE:00:00:11   # one device seen twice: fold the old MAC into the new, keep the name
 uv run curfew history "Sam's phone"
 uv run curfew watch --interval 60 # keep scanning in the foreground
 uv run curfew watcher install     # same, as a launchd agent at login (status / uninstall)
@@ -49,6 +50,7 @@ uv run curfew watcher install     # same, as a launchd agent at login (status / 
 
 Devices are addressed by MAC, nickname, router name or IP.
 A `*` after a MAC marks a randomized (private) wifi address; those change, so give the device a nickname.
+When a device changes its MAC and shows up as a second entry, `merge` folds the old record into the new one: the new MAC survives and inherits the old nickname, owner, tags and history.
 
 Groups, access on/off, schedules (basic parental control):
 
@@ -92,12 +94,24 @@ Every change is appended to `~/.curfew/changes.log`.
 
 Every command takes `--json` for machine readable output.
 
+### When a block will not hold
+
+Both blocking layers key on the device's MAC address, so anything that changes that address defeats them.
+
+Apple and Android devices use a randomized (private) wifi MAC by default, shown with a `*` after the MAC in `devices`.
+iOS rotates this address periodically and on rejoin, and when it rotates, the router block and Eclipse keep targeting the old MAC, so the device comes back unblocked.
+To make a block stick, turn the private address off for your network on the device itself: on iOS go to Settings, Wi-Fi, tap the network, set Private Wi-Fi Address to Off; on Android use the per-network "Privacy" or "MAC address type" setting.
+
+A cellular device can also keep internet after a successful wifi block by falling back to mobile data.
+iOS "Wi-Fi Assist" does this automatically the moment wifi stops reaching the internet, so a working block can still look broken.
+Neither layer can touch traffic that never crosses your router, so that case is a device setting, not something curfew controls.
+
 ## Agent tools (MCP)
 
 `.mcp.json` registers the server with Claude Code when it is started from this directory.
 Read tools: `router_status`, `list_devices`, `scan_network`, `who_is_new`, `known_devices`, `device_history`,
 `system_log`, `wifi_info`, `traffic_stats`, `check_firmware`, `list_groups`, `access_status`, `list_schedules`.
-Registry writes: `name_device`, `set_group_membership`, `add_schedule`, `remove_schedule`.
+Registry writes: `name_device`, `merge_devices`, `set_group_membership`, `add_schedule`, `remove_schedule`.
 Router writes: `set_access` (group, owner or device on/off), `apply_schedules`, `set_guest_wifi`, `reboot_router` (needs `confirm=true`).
 Eclipse Pause: `pause_device`, `resume_device`, `list_paused` (instant ARP cutoff; enforced by the `eclipse` daemon).
 

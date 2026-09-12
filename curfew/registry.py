@@ -320,7 +320,68 @@ class Registry:
         mac = normalize_mac(mac)
         with self._lock, self._db:
             self._db.execute("DELETE FROM sessions WHERE mac=?", (mac,))
+            self._db.execute("DELETE FROM overrides WHERE mac=?", (mac,))
+            self._db.execute("DELETE FROM pauses WHERE mac=?", (mac,))
             return self._db.execute("DELETE FROM devices WHERE mac=?", (mac,)).rowcount > 0
+
+    def merge(self, old_mac: str, new_mac: str) -> KnownDevice:
+        """Fold the old device record into the new MAC, then delete the old one.
+
+        Use this when one physical device appears twice, for example after a phone
+        stops using a randomized (private) wifi MAC and rejoins with its real one.
+        The new MAC is the survivor. Identity fields it is missing (nickname, owner,
+        notes) are inherited from the old record, tags are unioned, and the earlier
+        `first_seen` is kept. Presence history moves to the new MAC. A block or pause
+        on the old MAC moves to the new one only if the new MAC has none of its own.
+        """
+        old = normalize_mac(old_mac)
+        new = normalize_mac(new_mac)
+        if old == new:
+            raise ValueError("cannot merge a device into itself")
+        with self._lock, self._db:
+            self._db.execute("BEGIN")
+            o = self._db.execute("SELECT * FROM devices WHERE mac=?", (old,)).fetchone()
+            n = self._db.execute("SELECT * FROM devices WHERE mac=?", (new,)).fetchone()
+            if o is None:
+                raise KeyError(f"{old} has never been seen on this network")
+            if n is None:
+                raise KeyError(f"{new} has never been seen on this network")
+
+            tags = sorted({t for t in (*o["tags"].split(","), *n["tags"].split(",")) if t})
+            self._db.execute(
+                "UPDATE devices SET nickname=?, owner=?, notes=?, tags=?, first_seen=? WHERE mac=?",
+                (
+                    n["nickname"] or o["nickname"],
+                    n["owner"] or o["owner"],
+                    n["notes"] or o["notes"],
+                    ",".join(tags),
+                    min(o["first_seen"], n["first_seen"]),  # ISO-8601 UTC strings sort chronologically
+                    new,
+                ),
+            )
+            self._db.execute("UPDATE sessions SET mac=? WHERE mac=?", (new, old))
+
+            new_has_override = self._db.execute("SELECT 1 FROM overrides WHERE mac=?", (new,)).fetchone()
+            if new_has_override:
+                self._db.execute("DELETE FROM overrides WHERE mac=?", (old,))
+            else:
+                self._db.execute("UPDATE overrides SET mac=? WHERE mac=?", (new, old))
+
+            new_has_pause = self._db.execute("SELECT 1 FROM pauses WHERE mac=?", (new,)).fetchone()
+            old_pause = self._db.execute("SELECT * FROM pauses WHERE mac=?", (old,)).fetchone()
+            if old_pause and not new_has_pause:
+                # The old pause IP belonged to the old MAC; enforce against the survivor's current IP.
+                self._db.execute(
+                    "INSERT INTO pauses (mac, ip, since, reason) VALUES (?, ?, ?, ?)",
+                    (new, n["last_ip"], old_pause["since"], old_pause["reason"]),
+                )
+            self._db.execute("DELETE FROM pauses WHERE mac=?", (old,))
+
+            self._db.execute("DELETE FROM devices WHERE mac=?", (old,))
+            self._db.execute("COMMIT")
+        merged = self.get(new)
+        assert merged is not None
+        return merged
 
     # -- groups (tags) ---------------------------------------------------
 
