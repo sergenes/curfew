@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:GetInfoResponse
+        xmlns:m="urn:NETGEAR-ROUTER:service:LANConfigSecurity:1">
+        <NewLANSubnet>255.255.255.0</NewLANSubnet>
+        <NewWANLAN_Subnet_Match>0</NewWANLAN_Subnet_Match>
+        <NewLANMACAddress>94186500000C</NewLANMACAddress>
+        <NewLANIP>192.168.1.1</NewLANIP>
+        <NewDHCPEnabled>true</NewDHCPEnabled>
+    </m:GetInfoResponse>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>

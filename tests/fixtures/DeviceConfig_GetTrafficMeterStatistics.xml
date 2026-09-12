@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:GetTrafficMeterStatisticsResponse
+        xmlns:m="urn:NETGEAR-ROUTER:service:DeviceConfig:1">
+        <NewTodayConnectionTime>00:00</NewTodayConnectionTime>
+        <NewTodayUpload>0.00</NewTodayUpload>
+        <NewTodayDownload>0.00</NewTodayDownload>
+        <NewYesterdayConnectionTime>00:00</NewYesterdayConnectionTime>
+        <NewYesterdayUpload>0.00</NewYesterdayUpload>
+        <NewYesterdayDownload>0.00</NewYesterdayDownload>
+        <NewWeekConnectionTime>00:00</NewWeekConnectionTime>
+        <NewWeekUpload>0.00/0.00</NewWeekUpload>
+        <NewWeekDownload>0.00/0.00</NewWeekDownload>
+        <NewMonthConnectionTime>00:00</NewMonthConnectionTime>
+        <NewMonthUpload>0.00/0.00</NewMonthUpload>
+        <NewMonthDownload>0.00/0.00</NewMonthDownload>
+        <NewLastMonthConnectionTime>00:00</NewLastMonthConnectionTime>
+        <NewLastMonthUpload>0.00/0.00</NewLastMonthUpload>
+        <NewLastMonthDownload>0.00/0.00</NewLastMonthDownload>
+    </m:GetTrafficMeterStatisticsResponse>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>

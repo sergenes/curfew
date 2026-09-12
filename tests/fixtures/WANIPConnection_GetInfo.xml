@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:GetInfoResponse
+        xmlns:m="urn:NETGEAR-ROUTER:service:WANIPConnection:1">
+        <NewEnable>1</NewEnable>
+        <NewConnectionType>DHCP</NewConnectionType>
+        <NewExternalIPAddress>203.0.113.10</NewExternalIPAddress>
+        <NewSubnetMask>255.255.15.0</NewSubnetMask>
+        <NewAddressingType>DHCP</NewAddressingType>
+        <NewDefaultGateway>203.0.113.1</NewDefaultGateway>
+        <NewMACAddress>94186500000C</NewMACAddress>
+        <NewMACAddressOverride>0</NewMACAddressOverride>
+        <NewMaxMTUSize>1500</NewMaxMTUSize>
+        <NewDNSEnabled>1</NewDNSEnabled>
+        <NewDNSServers>198.51.100.45 198.51.100.46</NewDNSServers>
+    </m:GetInfoResponse>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>

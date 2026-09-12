@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:GetInfoResponse
+        xmlns:m="urn:NETGEAR-ROUTER:service:WLANConfiguration:1">
+        <NewEnable>1</NewEnable>
+        <NewSSIDBroadcast>1</NewSSIDBroadcast>
+        <NewStatus>Up</NewStatus>
+        <NewSSID>Home-2.4</NewSSID>
+        <NewRegion>US</NewRegion>
+        <NewChannel>Auto</NewChannel>
+        <NewWirelessMode>1200Mbps</NewWirelessMode>
+        <NewBasicEncryptionModes>WPA2-Personal</NewBasicEncryptionModes>
+        <NewWEPAuthType>Automatic</NewWEPAuthType>
+        <NewWPAEncryptionModes>WPA2-Personal</NewWPAEncryptionModes>
+        <NewWLANMACAddress>94186500000D</NewWLANMACAddress>
+    </m:GetInfoResponse>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>

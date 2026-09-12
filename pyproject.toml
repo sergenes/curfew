@@ -1,0 +1,61 @@
+[project]
+name = "curfew"
+version = "0.1.0"
+description = "Curfew: local control of a NETGEAR CAX80 cable router over its SOAP API, with a CLI, agent tools, and Eclipse Pause"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Sergey Neskoromny" }]
+requires-python = ">=3.12"
+dependencies = [
+    "httpx>=0.28.1",
+    "pydantic>=2.13.5",
+    "python-dotenv>=1.2.3",
+    "typer>=0.15",
+    "rich>=13",
+    "mcp>=1.2",
+    "scapy>=2.7.0",
+]
+
+[project.urls]
+Repository = "https://github.com/sergenes/curfew"
+Author = "https://www.linkedin.com/in/sergey-neskoromny/"
+
+[project.scripts]
+curfew = "curfew.cli:app"
+curfew-mcp = "curfew.mcp_server:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["curfew"]
+
+[dependency-groups]
+dev = [
+    "mypy>=2.3.1",
+    "pynetgear>=0.10.10",
+    "pynetgear-enhanced>=0.2.2",
+    "pytest>=9.1.1",
+    "pytest-asyncio>=0.24",
+    "respx>=0.22",
+    "ruff>=0.16.7",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["live: talks to the real router, needs .env"]
+addopts = "-m 'not live'"
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["curfew"]

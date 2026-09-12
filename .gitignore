@@ -1,0 +1,21 @@
+# Secrets
+.env
+
+# Raw router dumps from discovery (keep only the summary)
+discovery/*
+!discovery/SUMMARY.md
+
+# Local data
+*.db
+*.sqlite
+changes.log
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+dist/
+*.egg-info/

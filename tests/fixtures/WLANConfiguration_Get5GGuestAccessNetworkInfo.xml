@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:Get5GGuestAccessNetworkInfoResponse
+        xmlns:m="urn:NETGEAR-ROUTER:service:WLANConfiguration:1">
+        <NewSSID>NETGEAR-5G-Guest</NewSSID>
+        <NewSecurityMode>WPA2-Personal</NewSecurityMode>
+        <NewKey>redacted-key</NewKey>
+        <UserSetSchedule>0</UserSetSchedule>
+        <Schedule>0</Schedule>
+    </m:Get5GGuestAccessNetworkInfoResponse>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>

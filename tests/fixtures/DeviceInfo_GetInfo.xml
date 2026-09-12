@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:GetInfoResponse
+        xmlns:m="urn:NETGEAR-ROUTER:service:DeviceInfo:1">
+        <ModelName>CAX80</ModelName>
+        <Description>DOCSIS 3.1 Cable Modem Gateway Device</Description>
+        <SerialNumber>SERIAL0000001</SerialNumber>
+        <Firmwareversion>V5.1.1.8</Firmwareversion>
+        <SmartAgentversion>N/A</SmartAgentversion>
+        <FirewallVersion>N/A</FirewallVersion>
+        <VPNVersion>N/A</VPNVersion>
+        <OthersoftwareVersion>N/A</OthersoftwareVersion>
+        <Hardwareversion>1.01</Hardwareversion>
+        <Otherhardwareversion>N/A</Otherhardwareversion>
+        <FirstUseDate>N/A</FirstUseDate>
+        <DeviceName>CAX80</DeviceName>
+        <FirmwareDLmethod>Null</FirmwareDLmethod>
+        <FirmwareLastUpdate>Null</FirmwareLastUpdate>
+        <FirmwareLastChecked>Null</FirmwareLastChecked>
+        <DeviceMode>0</DeviceMode>
+    </m:GetInfoResponse>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>

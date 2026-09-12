@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:GetSystemLogsResponse
+        xmlns:m="urn:NETGEAR-ROUTER:service:DeviceInfo:1">
+        <NewLogDetails>[DHCP IP: 192.168.1.186] to MAC address f0:03:8c:00:00:04, Sat Sep 12 12:36:15 2026
+[Access Control] Device Unknown with MAC address 4A:AB:D9:00:00:05 is allowed to access the network., Sat Sep 12 12:35:58 2026
+[Access Control] Device Samsung with MAC address FC:03:9F:00:00:06 is allowed to access the network., Sat Sep 12 12:35:56 2026
+[Access Control] Device iPhone with MAC address 0C:85:E1:00:00:07 is allowed to access the network., Sat Sep 12 12:35:55 2026
+[Access Control] Device MacBook-Pro-2 with MAC address 84:2F:57:00:00:08 is allowed to access the network., Sat Sep 12 12:35:53 2026
+[Access Control] Device iPad with MAC address CE:46:A0:00:00:09 is allowed to access the network., Sat Sep 12 12:35:52 2026
+[Access Control] Device Unknown with MAC address 6A:0B:A2:00:00:0A is allowed to access the network., Sat Sep 12 12:35:50 2026
+[Access Control] Device HS210 with MAC address 74:DA:88:00:00:0B is allowed to access the network., Sat Sep 12 12:35:49 2026
+</NewLogDetails>
+    </m:GetSystemLogsResponse>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>

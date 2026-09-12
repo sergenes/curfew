@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "curfew": {
+      "command": "uv",
+      "args": ["run", "curfew-mcp"]
+    }
+  }
+}

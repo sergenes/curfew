@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:GetAttachDevice2Response
+        xmlns:m="urn:NETGEAR-ROUTER:service:DeviceInfo:1">
+        <NewAttachDevice>
+<Device>
+<IP>192.168.1.202</IP>
+<Name>Unknown</Name>
+<NameUserSet>true</NameUserSet>
+<MAC>98:DA:C4:00:00:01</MAC>
+<ConnectionType>2.4GHz</ConnectionType>
+<SSID>Home-2.4</SSID>
+<Linkspeed>100</Linkspeed>
+<SignalStrength>100</SignalStrength>
+<AllowOrBlock>Allow</AllowOrBlock>
+<Schedule>false</Schedule>
+<DeviceType>1</DeviceType>
+<DeviceTypeUserSet>true</DeviceTypeUserSet>
+<DeviceTypeV2>11</DeviceTypeV2>
+<DeviceTypeNameV2>IoT (Generic)</DeviceTypeNameV2>
+<Upload>0.00</Upload>
+<Download>0.00</Download>
+<QosPriority>1</QosPriority>
+<DeviceModel>Smart Wi-Fi Light Switch</DeviceModel>
+<Grouping>0</Grouping>
+<SchedulePeriod>0</SchedulePeriod>
+</Device>
+<Device>
+<IP>192.168.1.51</IP>
+<Name>HS200</Name>
+<NameUserSet>true</NameUserSet>
+<MAC>98:DA:C4:00:00:02</MAC>
+<ConnectionType>2.4GHz</ConnectionType>
+<SSID>Home-2.4</SSID>
+<Linkspeed>100</Linkspeed>
+<SignalStrength>100</SignalStrength>
+<AllowOrBlock>Allow</AllowOrBlock>
+<Schedule>false</Schedule>
+<DeviceType>1</DeviceType>
+<DeviceTypeUserSet>true</DeviceTypeUserSet>
+<DeviceTypeV2>11</DeviceTypeV2>
+<DeviceTypeNameV2>IoT (Generic)</DeviceTypeNameV2>
+<Upload>0.00</Upload>
+<Download>0.00</Download>
+<QosPriority>1</QosPriority>
+<DeviceModel>Smart Wi-Fi Light Switch</DeviceModel>
+<Grouping>0</Grouping>
+<SchedulePeriod>0</SchedulePeriod>
+</Device>
+<Device>
+<IP>192.168.1.157</IP>
+<Name>Unknown</Name>
+<NameUserSet>true</NameUserSet>
+<MAC>EA:82:62:00:00:03</MAC>
+<ConnectionType>2.4GHz</ConnectionType>
+<SSID>Home-2.4</SSID>
+<Linkspeed>100</Linkspeed>
+<SignalStrength>100</SignalStrength>
+<AllowOrBlock>Allow</AllowOrBlock>
+<Schedule>false</Schedule>
+<DeviceType>1</DeviceType>
+<DeviceTypeUserSet>true</DeviceTypeUserSet>
+<DeviceTypeV2>17</DeviceTypeV2>
+<DeviceTypeNameV2>Smart Phone (Generic)</DeviceTypeNameV2>
+<Upload>0.00</Upload>
+<Download>0.00</Download>
+<QosPriority>1</QosPriority>
+<DeviceModel></DeviceModel>
+<Grouping>0</Grouping>
+<SchedulePeriod>0</SchedulePeriod>
+</Device>
+</NewAttachDevice>
+    </m:GetAttachDevice2Response>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap-env:Envelope
+        xmlns:soap-env="http://schemas.xmlsoap.org/soap/envelope/"
+        soap-env:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"
+        >
+<soap-env:Body>
+    <m:GetTrafficMeterEnabledResponse
+        xmlns:m="urn:NETGEAR-ROUTER:service:DeviceConfig:1">
+        <NewTrafficMeterEnable>0</NewTrafficMeterEnable>
+    </m:GetTrafficMeterEnabledResponse>
+    <ResponseCode>000</ResponseCode>
+</soap-env:Body>
+</soap-env:Envelope>
