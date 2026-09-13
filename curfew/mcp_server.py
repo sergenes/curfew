@@ -482,6 +482,30 @@ async def pause_device(target: str, reason: str = "") -> dict[str, Any]:
 
 
 @server.tool(annotations=ROUTER_WRITE)
+async def pause_all_except(group: str = "admin", reason: str = "") -> dict[str, Any]:
+    """Instantly cut the internet for every attached device except those in `group` (default "admin").
+
+    Eclipse Pause (ARP), enforced by the eclipse daemon. Keep your own computer, home server and any
+    always-on devices in the group so they stay online; use resume_device(all_devices=true) to restore.
+    """
+    ecl = state.eclipse()
+    paused = await ecl.pause_all_except(group, reason)
+    now = datetime.now(UTC)
+    return {
+        "kept_online_group": group,
+        "paused": [
+            {"mac": p.mac, "ip": p.ip, "display_name": p.display_name} for p in paused
+        ],
+        "count": len(paused),
+        "enforcing": ecl.enforcing(),
+        "note": ""
+        if ecl.enforcing()
+        else "the eclipse daemon is not running, so this is recorded but not enforced yet",
+        "timestamp": now.isoformat(),
+    }
+
+
+@server.tool(annotations=ROUTER_WRITE)
 async def resume_device(target: str = "", all_devices: bool = False) -> dict[str, Any]:
     """Lift an Eclipse Pause for a group, owner or device, or all_devices=true for everyone."""
     ecl = state.eclipse()

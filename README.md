@@ -72,20 +72,29 @@ Eclipse Pause (instant cutoff, no router, no subscription):
 
 ```
 sudo -E uv run curfew eclipse run          # the enforcement daemon (needs root); keep it running
-uv run curfew pause kids                    # cut a group/owner/device off the internet in ~2s
+uv run curfew pause kids                    # cut a group/owner/device off the internet in ~1s
 uv run curfew resume kids                    # restore it
 uv run curfew resume --all
+uv run curfew group add admin "My Mac" "Home Server" "Living Room Switch"   # devices that must stay online
+uv run curfew alloff                         # cut the internet for everything except the admin group
+uv run curfew allon                          # restore everyone
 uv run curfew eclipse status                 # daemon state and who is paused
 sudo -E uv run curfew eclipse verify "Sam's iPad"   # prove it works on one device, then self-heal
 sudo -E uv run curfew eclipse doctor         # show the resolved network context
 ```
 
 Eclipse Pause is a self-hosted replacement for the paywalled Circle Pause.
-It cuts an already-connected device in about two seconds by ARP interception, works without
+It cuts an already-connected device in about a second by ARP interception, works without
 touching the router or the device, and keeps the device on wifi and the LAN.
 The router's MAC block (below) stays as the persistent, router-level layer; Eclipse is the instant one.
 Enforcement runs in the `eclipse` daemon as root; `pause` only records intent, so start the daemon first.
+The daemon re-sends every second by default and tracks a device's IP across DHCP changes; for a stubborn
+device that keeps recovering, run it tighter with `eclipse run --interval 0.5`.
 It works only while the daemon runs, and only on the machine running it (your Mac now, a Linux mini PC later).
+
+`alloff` is the house-wide kill switch: it pauses every attached device except the `admin` group, so put
+your own computer, the home server and any always-on devices in `admin` first (`--except <group>` to use a
+different one). `allon` lifts every pause at once.
 
 Blocking uses the router's Access Control feature, enabled automatically the first time.
 Its default policy for new devices is "allow all", so enabling it changes nothing by itself.
@@ -114,7 +123,7 @@ Read tools: `router_status`, `list_devices`, `scan_network`, `who_is_new`, `know
 `system_log`, `wifi_info`, `traffic_stats`, `check_firmware`, `list_groups`, `access_status`, `list_schedules`.
 Registry writes: `name_device`, `merge_devices`, `set_group_membership`, `add_schedule`, `remove_schedule`.
 Router writes: `set_access` (group, owner or device on/off), `clear_access_control` (empty the deny list), `apply_schedules`, `set_guest_wifi`, `reboot_router` (needs `confirm=true`).
-Eclipse Pause: `pause_device`, `resume_device`, `list_paused` (instant ARP cutoff; enforced by the `eclipse` daemon).
+Eclipse Pause: `pause_device`, `pause_all_except` (cut everything but a group), `resume_device`, `list_paused` (instant ARP cutoff; enforced by the `eclipse` daemon).
 
 Run it by hand with `uv run curfew-mcp` (stdio).
 

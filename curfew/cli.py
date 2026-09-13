@@ -797,9 +797,58 @@ def resume(
     console.print(f"resumed {n} device(s)")
 
 
+@app.command()
+def alloff(
+    group: str = typer.Option("admin", "--except", help="Group to keep online. Default: admin."),
+    reason: str = typer.Option("", help="Free text for the change log."),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Instantly cut the internet for every attached device except the admin group (Eclipse Pause).
+
+    Put your own computer, home server and anything that must stay online in the `admin` group first:
+    curfew group add admin "My Mac" "Home Server". Needs the eclipse daemon running as root.
+    """
+
+    async def go(c: Ctx) -> list[Any]:
+        await c.devices.scan()
+        plan = c.eclipse.devices_to_pause(group)
+        exempt = c.registry.by_tag(group)
+        if not plan:
+            console.print(f"Nothing to cut: no eligible online devices outside '{group}'.")
+            return []
+        console.print(
+            f"Will cut internet for {len(plan)} device(s), keeping '{group}' ({len(exempt)}) online:"
+        )
+        for d in plan:
+            console.print(f"  {d.display_name:28} {d.mac}  {d.last_ip}")
+        if not exempt:
+            console.print(f"[yellow]Warning: group '{group}' is empty, so this host may cut itself.[/yellow]")
+        if not yes and not typer.confirm("Proceed?"):
+            return []
+        for d in plan:
+            c.registry.set_pause(d.mac, d.last_ip, reason)
+        return plan
+
+    paused = _run(go)
+    if paused:
+        console.print(f"Cut {len(paused)} device(s) off the internet. '{group}' stays online.")
+    if paused and not eclipse_running(Settings.from_env().data_dir):
+        console.print(
+            "[yellow]Eclipse daemon is not running; pauses are recorded but not enforced yet.[/yellow]"
+        )
+        console.print("Start it with: [bold]sudo -E uv run curfew eclipse run[/bold]")
+
+
+@app.command()
+def allon() -> None:
+    """Restore the internet for every paused device, lifting all Eclipse Pauses at once."""
+    n = _run(lambda c: _async_value(c.eclipse.resume_all()))
+    console.print(f"resumed {n} device(s)")
+
+
 @eclipse_app.command("run")
 def eclipse_run(
-    interval: float = typer.Option(2.0, help="Seconds between ARP re-sends."),
+    interval: float = typer.Option(1.0, help="Seconds between ARP re-sends. Lower holds stubborn devices."),
     iface: str = typer.Option("", help="Network interface (default: auto)."),
 ) -> None:
     """Run the enforcement daemon in the foreground. Needs root (sudo -E)."""

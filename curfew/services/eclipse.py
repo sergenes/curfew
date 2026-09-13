@@ -15,7 +15,7 @@ import signal
 from datetime import UTC, datetime
 
 from curfew.config import Settings
-from curfew.models import PauseTarget
+from curfew.models import KnownDevice, PauseTarget
 from curfew.pause import (
     PauseEngine,
     PauseError,
@@ -29,8 +29,11 @@ from curfew.pause import (
 from curfew.registry import Registry
 from curfew.services.devices import DeviceService
 from curfew.soap import SoapClient
+from curfew.vendor import normalize_mac
 
 log = logging.getLogger(__name__)
+
+DEFAULT_ADMIN_GROUP = "admin"
 
 
 class EclipseService:
@@ -63,6 +66,39 @@ class EclipseService:
     def resume_all(self) -> int:
         return self.registry.clear_all_pauses()
 
+    def devices_to_pause(self, group: str = DEFAULT_ADMIN_GROUP) -> list[KnownDevice]:
+        """Online devices that `alloff` would cut: everything not in `group`, not the router.
+
+        Pure and scan-free, so the CLI can preview it before acting. Skips offline devices and
+        any without a current IP, since there is nothing to spoof.
+        """
+        exempt = {normalize_mac(d.mac) for d in self.registry.by_tag(group)}
+        out: list[KnownDevice] = []
+        for d in self.registry.all():
+            if not d.online or normalize_mac(d.mac) in exempt or not d.last_ip:
+                continue
+            if d.last_ip == self.settings.host:  # never the router
+                continue
+            out.append(d)
+        return out
+
+    async def pause_all_except(self, group: str = DEFAULT_ADMIN_GROUP, reason: str = "") -> list[PauseTarget]:
+        """Scan, then pause every attached device not in `group`. The daemon enforces within a loop.
+
+        The machine running the daemon should be a member of `group`; the enforcing engine refuses
+        to spoof its own host regardless, but keeping it in the group avoids a dead pause row.
+        """
+        await self.devices.scan()
+        now = datetime.now(UTC)
+        paused: list[PauseTarget] = []
+        for d in self.devices_to_pause(group):
+            mac = normalize_mac(d.mac)
+            self.registry.set_pause(mac, d.last_ip, reason)
+            paused.append(
+                PauseTarget(mac=mac, ip=d.last_ip, since=now, reason=reason, display_name=d.display_name)
+            )
+        return paused
+
     def list_paused(self) -> list[PauseTarget]:
         return self.registry.pauses()
 
@@ -70,11 +106,27 @@ class EclipseService:
         return eclipse_running(self.settings.data_dir)
 
 
+def current_targets(registry: Registry) -> dict[str, Target]:
+    """The paused set the daemon should enforce, keyed by MAC.
+
+    Prefers each device's current IP from the registry (refreshed by every scan) over the IP stored
+    when the pause was created, so a device that changed its DHCP lease is still cut. A pause with no
+    known IP yet is left out until the next scan fills it in.
+    """
+    out: dict[str, Target] = {}
+    for p in registry.pauses():
+        fresh = registry.get(p.mac)
+        ip = fresh.last_ip if fresh and fresh.last_ip else p.ip
+        if ip:
+            out[p.mac] = Target(mac=p.mac, ip=ip)
+    return out
+
+
 async def run_daemon(
     settings: Settings,
     *,
-    interval: float = 2.0,
-    refresh_s: float = 60.0,
+    interval: float = 1.0,
+    refresh_s: float = 20.0,
     iface: str | None = None,
 ) -> None:
     """Continuously enforce the paused set with ARP. Needs root. Heals everything on exit."""
@@ -105,7 +157,7 @@ async def run_daemon(
                 await _refresh_ips(settings, registry)
                 last_refresh = now
 
-            current = {p.mac: Target(mac=p.mac, ip=p.ip) for p in registry.pauses() if p.ip}
+            current = current_targets(registry)
             added, removed = diff_targets(active, current)
             for t in added:
                 log.info("pausing %s (%s)", t.mac, t.ip)
@@ -113,6 +165,10 @@ async def run_daemon(
                 log.info("resuming %s (%s)", t.mac, t.ip)
                 engine.heal(t)
             active = current
+            if added:
+                # a device just entered the paused set: re-read its IP from the router promptly
+                # instead of waiting up to refresh_s, so a fresh pause does not sit on a stale IP
+                last_refresh = 0.0
 
             for t in active.values():
                 try:

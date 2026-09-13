@@ -92,3 +92,39 @@ async def test_mcp_pause_unknown_is_tool_error(ecl: EclipseService, monkeypatch:
     monkeypatch.setattr(mcp_server.state, "eclipse", lambda: ecl)
     with pytest.raises(ToolError, match="no device matches 'toaster'"):
         await mcp_server.pause_device("toaster")
+
+
+PHONE = "EA:82:62:00:00:03"
+
+
+async def test_devices_to_pause_excludes_admin_group_and_keeps_the_rest(ecl: EclipseService) -> None:
+    ecl.registry.add_tags(SWITCH_A, ["admin"])
+    plan = {d.mac for d in ecl.devices_to_pause("admin")}
+    assert SWITCH_A not in plan  # admin member is spared
+    assert SWITCH_B in plan and PHONE in plan  # everyone else online is included
+
+
+async def test_pause_all_except_pauses_everyone_outside_the_group(ecl: EclipseService) -> None:
+    ecl.registry.add_tags(SWITCH_A, ["admin"])
+    paused = await ecl.pause_all_except("admin", reason="bedtime")
+    paused_macs = {p.mac for p in paused}
+    assert SWITCH_A not in paused_macs
+    assert {SWITCH_B, PHONE} <= paused_macs
+    recorded = {p.mac for p in ecl.list_paused()}
+    assert SWITCH_A not in recorded and SWITCH_B in recorded
+    assert all(p.reason == "bedtime" for p in paused)
+
+
+async def test_current_targets_prefers_live_registry_ip(ecl: EclipseService) -> None:
+    from curfew.services.eclipse import current_targets
+
+    # Pause records the IP known at pause time.
+    await ecl.pause("Hall")
+    assert current_targets(ecl.registry)[SWITCH_A].ip == "192.168.1.202"
+    # The device moves to a new DHCP lease; a later scan updates the registry but not the pause row.
+    ecl.registry.update_pause_ip(SWITCH_A, "192.168.1.202")  # pause row still holds the old IP
+    from curfew.models import Band, Device
+
+    ecl.registry.record_scan([Device(mac=SWITCH_A, ip="192.168.1.240", name="Hall", band=Band.GHZ_2_4)])
+    # The daemon should now target the fresh IP from the registry, not the stale pause IP.
+    assert current_targets(ecl.registry)[SWITCH_A].ip == "192.168.1.240"
