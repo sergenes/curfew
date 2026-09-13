@@ -89,8 +89,16 @@ touching the router or the device, and keeps the device on wifi and the LAN.
 The router's MAC block (below) stays as the persistent, router-level layer; Eclipse is the instant one.
 Enforcement runs in the `eclipse` daemon as root; `pause` only records intent, so start the daemon first.
 The daemon re-sends every second by default and tracks a device's IP across DHCP changes; for a stubborn
-device that keeps recovering, run it tighter with `eclipse run --interval 0.5`.
+device that keeps recovering, run it tighter with `eclipse run --interval 0.2`.
+The spoof is one 64-byte unicast frame per paused device, and it never leaves the LAN, so it costs no
+internet bandwidth and adds only negligible wifi airtime even at a fast interval; a lower value just wins
+the ARP race against the real router more reliably.
 It works only while the daemon runs, and only on the machine running it (your Mac now, a Linux mini PC later).
+
+How the two layers behave, worth knowing before you rely on either.
+A block prevents a device from joining the network, so it takes effect on the device's next connection, not on a live one.
+A pause cuts a device that is already connected, usually in a second or two, but an app that prefetches video far ahead, YouTube Shorts most of all, can keep playing from its buffer for several minutes before it runs dry.
+For an immediate and complete stop, do all three: block the device, pause it, then reconnect it by toggling its wifi, which tears down the open streaming sessions and empties the buffer.
 
 `alloff` is the house-wide kill switch: it pauses every attached device except the `admin` group, so put
 your own computer, the home server and any always-on devices in `admin` first (`--except <group>` to use a
