@@ -327,6 +327,21 @@ async def set_access(target: str, enabled: bool, reason: str = "") -> dict[str, 
     }
 
 
+@server.tool(annotations=ROUTER_WRITE)
+async def clear_access_control(extra_macs: list[str] | None = None) -> dict[str, Any]:
+    """Unblock every device curfew has blocked, clearing the Access Control deny list.
+
+    The router exposes no way to read its full block list, so this clears the blocks curfew knows
+    about (devices flagged blocked and pending block overrides). Pass extra_macs to also clear
+    orphaned entries the registry no longer tracks, such as an old randomized MAC after a merge.
+    Leaves the Access Control feature itself on.
+    """
+    ctl = state.control()
+    await ctl.devices.scan()
+    cleared = await ctl.clear_access_control(extra_macs or [])
+    return {"cleared": cleared, "count": len(cleared)}
+
+
 @server.tool(annotations=READ_ONLY)
 async def access_status() -> dict[str, Any]:
     """Whether Access Control is on, which devices are blocked and why, and which schedules are active."""

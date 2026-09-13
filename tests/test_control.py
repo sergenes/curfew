@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import httpx
 import pytest
 
 from curfew.models import Band
@@ -136,3 +138,42 @@ async def test_reboot_and_guest(ctl: ControlService, router: FakeRouter) -> None
     assert "DeviceConfig:1#Reboot" in router.calls
     log = ctl.changes_log.read_text()
     assert "guest-wifi" in log and "reboot" in log
+
+
+def _record_mac_calls(router: FakeRouter) -> list[tuple[str, str]]:
+    """Capture (mac, Allow|Block) for each SetBlockDeviceByMAC, so tests can assert what was sent."""
+    calls: list[tuple[str, str]] = []
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        body = req.content.decode()
+        mac = re.search(r"<NewMACAddress>([^<]*)", body)
+        allow = re.search(r"<NewAllowOrBlock>([^<]*)", body)
+        calls.append((mac.group(1) if mac else "", allow.group(1) if allow else ""))
+        return httpx.Response(200, text=code_only("000"))
+
+    router.responses["DeviceConfig:1#SetBlockDeviceByMAC"] = handler
+    return calls
+
+
+async def test_clear_access_control_unblocks_known_and_orphan(
+    ctl: ControlService, router: FakeRouter
+) -> None:
+    await ctl.set_access("kids", allow=False)  # block SWITCH_A and SWITCH_B, set block overrides
+    assert ctl.registry.get(SWITCH_A).access_state == "block"  # type: ignore[union-attr]
+
+    calls = _record_mac_calls(router)
+    orphan = "CE:46:A0:89:F4:6F"  # an old randomized MAC the registry no longer tracks
+    cleared = await ctl.clear_access_control(extra=[orphan.lower()])
+
+    assert set(cleared) == {SWITCH_A, SWITCH_B, orphan}
+    assert {mac for mac, _ in calls} == {SWITCH_A, SWITCH_B, orphan}
+    assert all(allow == "Allow" for _, allow in calls)
+    # local state no longer holds a block, so the watcher will not re-apply one
+    assert ctl.registry.overrides() == {}
+    assert ctl.registry.get(SWITCH_A).access_state == "allow"  # type: ignore[union-attr]
+    assert "clear deny list" in ctl.changes_log.read_text()
+
+
+async def test_clear_access_control_with_nothing_blocked(ctl: ControlService) -> None:
+    assert ctl.blocked_macs() == []
+    assert await ctl.clear_access_control() == []

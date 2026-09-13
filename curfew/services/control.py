@@ -93,6 +93,40 @@ class ControlService:
             access_control_enabled_now=enabled_now,
         )
 
+    def blocked_macs(self, extra: list[str] | None = None) -> list[str]:
+        """MACs curfew believes are blocked: flagged blocked in the registry or holding a block override.
+
+        This firmware exposes no way to read the router's full block list, so this is the best the
+        toolkit can enumerate. `extra` adds MACs the registry no longer tracks, e.g. a device's old
+        randomized address after a merge. Returns normalized MACs, in a stable order, deduplicated.
+        """
+        macs: dict[str, None] = {}
+        for d in self.registry.all():
+            if d.access_state == "block":
+                macs[normalize_mac(d.mac)] = None
+        for mac, override in self.registry.overrides().items():
+            if not override.allow:
+                macs[normalize_mac(mac)] = None
+        for mac in extra or []:
+            macs[normalize_mac(mac)] = None
+        return list(macs)
+
+    async def clear_access_control(self, extra: list[str] | None = None) -> list[str]:
+        """Allow every blocked MAC curfew knows about (plus any `extra`), clearing the deny list.
+
+        Also drops the local block overrides, so the watcher does not re-apply them. Returns the
+        MACs cleared. Leaves the Access Control feature itself enabled; use set_access_control(False)
+        to turn the whole feature off instead.
+        """
+        cleared: list[str] = []
+        for mac in self.blocked_macs(extra):
+            await actions.set_device_access(self.client, mac, allow=True)
+            self.registry.set_access_state(mac, True)
+            self.registry.clear_override(mac)
+            self._log("allow", mac, "clear deny list")
+            cleared.append(mac)
+        return cleared
+
     async def set_access_control(self, enabled: bool) -> None:
         await actions.set_access_control_enabled(self.client, enabled)
         self._log("access-control", "router", "enabled" if enabled else "disabled")

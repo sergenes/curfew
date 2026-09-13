@@ -62,6 +62,9 @@ console = Console(emoji=False)
 
 JSON_OPTION = typer.Option(False, "--json", help="Print machine readable JSON instead of a table.")
 DEVICES_ARG = typer.Argument(help="One or more devices: MAC, nickname, router name or IP.")
+EXTRA_MACS_ARG = typer.Argument(
+    None, help="Extra MACs to unblock too, e.g. a device's old randomized address. Optional."
+)
 LAUNCHD_LABEL = "com.curfew.watch"
 
 
@@ -606,6 +609,40 @@ def access_control(state: str = typer.Argument(help="on or off")) -> None:
         raise typer.BadParameter("use on or off")
     _run(lambda c: c.control.set_access_control(state == "on"))
     console.print(f"Access Control {state}")
+
+
+@access_app.command("clear")
+def access_clear(
+    macs: list[str] | None = EXTRA_MACS_ARG,
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt."),
+) -> None:
+    """Unblock every device curfew has blocked, clearing the Access Control deny list.
+
+    The router exposes no way to read its full block list, so this clears the blocks curfew knows
+    about: devices flagged blocked and any pending block overrides. Name extra MACs to also clear
+    orphaned entries the registry no longer tracks, such as an old randomized MAC after a merge.
+    """
+    extra = macs or []
+
+    async def plan(c: Ctx) -> list[tuple[str, str]]:
+        await c.devices.scan()
+        out: list[tuple[str, str]] = []
+        for mac in c.control.blocked_macs(extra):
+            known = c.registry.get(mac)
+            out.append((mac, known.display_name if known else ""))
+        return out
+
+    planned = _run(plan)
+    if not planned:
+        console.print("Nothing to clear: no blocked devices known to curfew.")
+        raise typer.Exit(0)
+    console.print(f"Will unblock {len(planned)} device(s) in Access Control:")
+    for mac, name in planned:
+        console.print(f"  {name or '(unknown)':28} {mac}")
+    if not yes and not typer.confirm("Clear these from the deny list?"):
+        raise typer.Exit(0)
+    cleared = _run(lambda c: c.control.clear_access_control(extra))
+    console.print(f"Cleared {len(cleared)} device(s) from the Access Control deny list.")
 
 
 # -- schedules -----------------------------------------------------------------

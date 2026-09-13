@@ -60,6 +60,7 @@ uv run curfew group list
 uv run curfew access off kids          # block every device in the group (also works for an owner or one device)
 uv run curfew access on kids
 uv run curfew access status            # what is blocked and why
+uv run curfew access clear             # unblock everything curfew has blocked; add a MAC to clear an orphaned entry
 uv run curfew schedule add kids --from 21:00 --to 07:00 --days weekdays --name bedtime
 uv run curfew schedule list
 uv run curfew schedule apply           # evaluate now; the watcher does this after every scan
@@ -112,7 +113,7 @@ Neither layer can touch traffic that never crosses your router, so that case is 
 Read tools: `router_status`, `list_devices`, `scan_network`, `who_is_new`, `known_devices`, `device_history`,
 `system_log`, `wifi_info`, `traffic_stats`, `check_firmware`, `list_groups`, `access_status`, `list_schedules`.
 Registry writes: `name_device`, `merge_devices`, `set_group_membership`, `add_schedule`, `remove_schedule`.
-Router writes: `set_access` (group, owner or device on/off), `apply_schedules`, `set_guest_wifi`, `reboot_router` (needs `confirm=true`).
+Router writes: `set_access` (group, owner or device on/off), `clear_access_control` (empty the deny list), `apply_schedules`, `set_guest_wifi`, `reboot_router` (needs `confirm=true`).
 Eclipse Pause: `pause_device`, `resume_device`, `list_paused` (instant ARP cutoff; enforced by the `eclipse` daemon).
 
 Run it by hand with `uv run curfew-mcp` (stdio).
