@@ -850,14 +850,24 @@ def allon() -> None:
 def eclipse_run(
     interval: float = typer.Option(1.0, help="Seconds between ARP re-sends. Lower holds stubborn devices."),
     iface: str = typer.Option("", help="Network interface (default: auto)."),
+    one_way: bool = typer.Option(
+        False, "--one-way", help="Only poison the victim, not the router. Weaker; two-way is the default."
+    ),
 ) -> None:
-    """Run the enforcement daemon in the foreground. Needs root (sudo -E)."""
+    """Run the enforcement daemon in the foreground. Needs root (sudo -E).
+
+    By default it poisons both directions: it tells the victim the router is at our MAC and tells the
+    router the victim is at our MAC, so a device cannot recover a working path between re-sends. This
+    reliably cuts a streaming device without a reboot; `--one-way` reverts to victim-only poisoning.
+    """
     import logging as _logging
 
     _logging.basicConfig(level=_logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     settings = Settings.from_env()
     try:
-        asyncio.run(run_daemon(settings, interval=interval, iface=iface or None))
+        asyncio.run(
+            run_daemon(settings, interval=interval, iface=iface or None, bidirectional=not one_way)
+        )
     except PauseError as err:
         console.print(f"[red]{err}[/red]")
         raise typer.Exit(1) from err

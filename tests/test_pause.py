@@ -91,6 +91,37 @@ def test_heal_restores_real_gateway_mac() -> None:
     assert p["sender_mac"] == NET.gateway_mac  # the truth restored
 
 
+def test_bidirectional_spoof_poisons_both_the_victim_and_the_router() -> None:
+    sender = FakeSender()
+    engine = PauseEngine(NET, sender, bidirectional=True)
+    engine.spoof(KID)
+    assert len(sender.frames) == 2
+    victim = parse_arp_reply(sender.frames[0])
+    router = parse_arp_reply(sender.frames[1])
+    # to the victim: the router's IP is at our MAC (its outbound dies)
+    assert victim["dst_mac"] == KID.mac
+    assert victim["sender_ip"] == NET.gateway_ip and victim["sender_mac"] == NET.our_mac
+    # to the router: the victim's IP is at our MAC (the return path dies)
+    assert router["dst_mac"] == NET.gateway_mac
+    assert router["sender_ip"] == KID.ip and router["sender_mac"] == NET.our_mac
+
+
+def test_bidirectional_heal_restores_both_sides() -> None:
+    sender = FakeSender()
+    engine = PauseEngine(NET, sender, bidirectional=True)
+    engine.heal(KID, repeat=2)
+    assert len(sender.frames) == 4  # victim + router, twice
+    router = parse_arp_reply(sender.frames[1])
+    assert router["dst_mac"] == NET.gateway_mac
+    assert router["sender_ip"] == KID.ip and router["sender_mac"] == KID.mac  # truth restored to the router
+
+
+def test_one_way_is_the_engine_default() -> None:
+    sender = FakeSender()
+    PauseEngine(NET, sender).spoof(KID)
+    assert len(sender.frames) == 1  # victim only, unless bidirectional is requested
+
+
 def test_safety_refuses_router_and_self() -> None:
     engine = PauseEngine(NET, FakeSender())
     with pytest.raises(PauseError, match="router itself"):

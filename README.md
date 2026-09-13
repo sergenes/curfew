@@ -90,9 +90,11 @@ The router's MAC block (below) stays as the persistent, router-level layer; Ecli
 Enforcement runs in the `eclipse` daemon as root; `pause` only records intent, so start the daemon first.
 The daemon re-sends every second by default and tracks a device's IP across DHCP changes; for a stubborn
 device that keeps recovering, run it tighter with `eclipse run --interval 0.2`.
-The spoof is one 64-byte unicast frame per paused device, and it never leaves the LAN, so it costs no
-internet bandwidth and adds only negligible wifi airtime even at a fast interval; a lower value just wins
-the ARP race against the real router more reliably.
+By default it poisons both directions: it tells the victim the router is at our MAC and tells the router
+the victim is at our MAC, so a device cannot recover a working path between re-sends. This is what cuts a
+buffering stream without a reboot; pass `--one-way` for victim-only poisoning.
+The spoof is a couple of tiny unicast frames per paused device, and it never leaves the LAN, so it costs
+no internet bandwidth and adds only negligible wifi airtime even at a fast interval.
 It works only while the daemon runs, and only on the machine running it (your Mac now, a Linux mini PC later).
 
 How the two layers behave, worth knowing before you rely on either.

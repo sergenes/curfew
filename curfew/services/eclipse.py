@@ -128,18 +128,20 @@ async def run_daemon(
     interval: float = 1.0,
     refresh_s: float = 20.0,
     iface: str | None = None,
+    bidirectional: bool = True,
 ) -> None:
     """Continuously enforce the paused set with ARP. Needs root. Heals everything on exit."""
     net = build_network_info(settings.host, iface)
     log.info(
-        "Eclipse on %s (us %s / %s, router %s / %s)",
+        "Eclipse on %s (us %s / %s, router %s / %s)%s",
         net.iface,
         net.our_ip,
         net.our_mac,
         net.gateway_ip,
         net.gateway_mac,
+        ", two-way" if bidirectional else ", one-way",
     )
-    engine = PauseEngine(net, ScapySender(net.iface))
+    engine = PauseEngine(net, ScapySender(net.iface), bidirectional=bidirectional)
     registry = Registry(settings.registry_path)
 
     stop = asyncio.Event()
