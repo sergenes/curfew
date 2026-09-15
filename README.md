@@ -126,6 +126,30 @@ A cellular device can also keep internet after a successful wifi block by fallin
 iOS "Wi-Fi Assist" does this automatically the moment wifi stops reaching the internet, so a working block can still look broken.
 Neither layer can touch traffic that never crosses your router, so that case is a device setting, not something curfew controls.
 
+### Website filtering (DNS)
+
+A third layer blocks or allows websites per group, owner or device, without touching the router's own settings.
+It runs a small DNS resolver on the always-on box; each lookup arrives tagged with the asking device's IP, so a group or one device can have its own policy while everyone else is untouched.
+
+```
+sudo -E uv run curfew dns run                 # the DNS filter daemon (needs root for port 53); keep it running
+uv run curfew filter mode kids blacklist      # block the block list for the kids group
+uv run curfew filter block kids youtube.com tiktok.com
+uv run curfew filter mode "Sam's iPad" whitelist   # a stricter per-device policy overrides the group
+uv run curfew filter allow "Sam's iPad" school.edu wikipedia.org
+uv run curfew filter list kids                # modes and lists
+uv run curfew filter status                   # is the daemon running, which scopes are filtered
+uv run curfew dns status
+```
+
+Two modes per scope: `blacklist` refuses the listed domains and forwards the rest; `whitelist` forwards only the listed domains and refuses everything else.
+The most specific scope with a mode set wins, in the order device, owner, group, then a global default, so you can filter a whole group and still exempt one device.
+Domains match by suffix, so `youtube.com` also covers `www.youtube.com`.
+
+One-time setup: point the router's DHCP DNS at the machine running the daemon, so every device resolves through it.
+Honest limits: it filters by domain, so it is all-YouTube not just Shorts; a device using its own encrypted DNS (DoH) can route around it unless you also block that; and it cannot stop video already sitting in a device's buffer.
+IP entries are stored but only a future gateway mode enforces them; the DNS filter matches domains.
+
 ## Agent tools (MCP)
 
 `.mcp.json` registers the server with Claude Code when it is started from this directory.
@@ -134,6 +158,7 @@ Read tools: `router_status`, `list_devices`, `scan_network`, `who_is_new`, `know
 Registry writes: `name_device`, `merge_devices`, `set_group_membership`, `add_schedule`, `remove_schedule`.
 Router writes: `set_access` (group, owner or device on/off), `clear_access_control` (empty the deny list), `apply_schedules`, `set_guest_wifi`, `reboot_router` (needs `confirm=true`).
 Eclipse Pause: `pause_device`, `pause_all_except` (cut everything but a group), `resume_device`, `list_paused` (instant ARP cutoff; enforced by the `eclipse` daemon).
+Website filter: `set_filter_mode`, `set_filter_rule` (add or remove block/allow domains), `list_filters` (enforced by the `dns` daemon).
 
 Run it by hand with `uv run curfew-mcp` (stdio).
 
@@ -174,8 +199,9 @@ curfew/models.py        pydantic models
 curfew/registry.py      SQLite device registry: presence sessions, groups (tags), schedules, overrides
 curfew/scheduler.py     rule evaluation in local time, manual override precedence
 curfew/pause.py         Eclipse Pause: ARP frame building, engine, daemon heartbeat
+curfew/dnsfilter.py     DNS filter primitives: query parsing, block replies, match and decision
 curfew/vendor.py        OUI vendor lookup, randomized MAC detection
-curfew/services/        compositions: status, wifi, devices, control, eclipse (ARP pause)
+curfew/services/        compositions: status, wifi, devices, control, eclipse (ARP pause), filtering, dns
 curfew/mcp_server.py    MCP server (stdio)
 curfew/cli.py           typer CLI
 scripts/                   discovery and fixture tooling
