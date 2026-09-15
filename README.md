@@ -21,6 +21,37 @@ uv run curfew vendors update # optional: IEEE vendor table so unknown devices sh
 Local state (registry database, vendor table, watcher logs) lives in `~/.curfew/`.
 Set `CURFEW_DATA_DIR` to move it.
 
+## Quick start
+
+The commands you will actually use day to day. The full list is below.
+
+```
+uv run curfew devices                       # who is online right now
+uv run curfew name "iPhone" --nickname "Sam phone" --owner Sam --tags kids
+
+uv run curfew access off kids               # block a device/owner/group at the router (persists across reboots)
+uv run curfew access on kids                # unblock
+
+uv run curfew pause "Sam phone"             # cut it off this second (needs the eclipse daemon, below)
+uv run curfew resume "Sam phone"
+uv run curfew alloff                         # cut the whole house except the "admin" group
+uv run curfew allon
+
+uv run curfew filter mode kids blacklist    # website filtering per group/device (needs the dns daemon, below)
+uv run curfew filter block kids youtube.com tiktok.com
+
+uv run curfew schedule add kids --from 21:00 --to 07:00 --days weekdays --name bedtime
+```
+
+Two background daemons power the instant layers, each run once and left running (root):
+
+```
+sudo -E uv run curfew eclipse run           # enforces pause / alloff (ARP)
+sudo -E uv run curfew dns run               # enforces the website filter (DNS)
+```
+
+Ask an agent instead of typing: with the MCP server connected, "pause Sam's phone" or "block YouTube for the kids" just works.
+
 ## CLI
 
 Router:
