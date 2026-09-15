@@ -32,7 +32,9 @@ from curfew.scheduler import format_days, is_active
 from curfew.services import status as status_service
 from curfew.services.control import ControlService
 from curfew.services.devices import DeviceService, humanize
+from curfew.services.dns import DEFAULT_UPSTREAM, dns_running, run_dns
 from curfew.services.eclipse import EclipseService, run_daemon
+from curfew.services.filtering import FilterService
 from curfew.soap import SoapClient, SoapError
 from curfew.vendor import VendorDb
 
@@ -50,6 +52,10 @@ guest_app = typer.Typer(help="Guest wifi.", no_args_is_help=True)
 eclipse_app = typer.Typer(
     help="Eclipse Pause: instant ARP-based internet cutoff (needs root).", no_args_is_help=True
 )
+filter_app = typer.Typer(
+    help="Per-group/device website allow and deny lists, enforced by the DNS filter.", no_args_is_help=True
+)
+dns_app = typer.Typer(help="The DNS filter daemon (needs root) and its status.", no_args_is_help=True)
 app.add_typer(watcher_app, name="watcher")
 app.add_typer(vendors_app, name="vendors")
 app.add_typer(group_app, name="group")
@@ -57,6 +63,8 @@ app.add_typer(access_app, name="access")
 app.add_typer(schedule_app, name="schedule")
 app.add_typer(guest_app, name="guest")
 app.add_typer(eclipse_app, name="eclipse")
+app.add_typer(filter_app, name="filter")
+app.add_typer(dns_app, name="dns")
 # emoji=False: Rich would otherwise turn ":AB:" inside a MAC address into a glyph.
 console = Console(emoji=False)
 
@@ -86,6 +94,10 @@ class Ctx:
     @property
     def eclipse(self) -> EclipseService:
         return EclipseService(self.client, self.registry, self.settings)
+
+    @property
+    def filter(self) -> FilterService:
+        return FilterService(self.registry)
 
 
 def _run[T](fn: Callable[[Ctx], Awaitable[T]]) -> T:
@@ -967,6 +979,138 @@ def eclipse_doctor(iface: str = typer.Option("", help="Interface to test (defaul
     console.print(f"This host : {net.our_ip}  {net.our_mac}")
     console.print(f"Router    : {net.gateway_ip}  {net.gateway_mac}")
     console.print("[green]OK[/green] Eclipse can resolve the router; the daemon can enforce pauses.")
+
+
+# -- DNS website filter -------------------------------------------------------
+
+FILTER_TARGET_ARG = typer.Argument(help="Group, owner, device, or 'all' for everyone.")
+FILTER_DOMAINS_ARG = typer.Argument(help="One or more domains, e.g. youtube.com tiktok.com.")
+
+
+def _looks_like_ip(pattern: str) -> bool:
+    head = pattern.split("/")[0]
+    parts = head.split(".")
+    return len(parts) == 4 and all(p.isdigit() for p in parts)
+
+
+@filter_app.command("mode")
+def filter_mode(
+    target: str = FILTER_TARGET_ARG,
+    mode: str = typer.Argument(help="off, blacklist (block the list), or whitelist (allow only the list)."),
+) -> None:
+    """Set the filtering mode for a group, owner, device, or everyone."""
+    label, applied = _run(lambda c: _async_value(c.filter.set_mode(target, mode)))
+    console.print(f"{label}: filter mode = {applied}")
+    if not dns_running(Settings.from_env().data_dir):
+        console.print(
+            "[yellow]The DNS filter daemon is not running; start it with: "
+            "sudo -E uv run curfew dns run[/yellow]"
+        )
+
+
+@filter_app.command("block")
+def filter_block(target: str = FILTER_TARGET_ARG, domains: list[str] = FILTER_DOMAINS_ARG) -> None:
+    """Add domains to a target's block list (used in blacklist mode)."""
+
+    def go(c: Ctx) -> list[str]:
+        added = []
+        for d in domains:
+            if _looks_like_ip(d):
+                console.print(
+                    f"[yellow]{d} looks like an IP; the DNS filter matches domains, "
+                    "so it is stored but not enforced yet.[/yellow]"
+                )
+            _, p = c.filter.add(target, d, block=True)
+            added.append(p)
+        return added
+
+    added = _run(lambda c: _async_value(go(c)))
+    console.print(f"blocked {len(added)} pattern(s): {', '.join(added)}")
+
+
+@filter_app.command("allow")
+def filter_allow(target: str = FILTER_TARGET_ARG, domains: list[str] = FILTER_DOMAINS_ARG) -> None:
+    """Add domains to a target's allow list (the only ones reachable in whitelist mode)."""
+    added = _run(lambda c: _async_value([c.filter.add(target, d, block=False)[1] for d in domains]))
+    console.print(f"allowed {len(added)} pattern(s): {', '.join(added)}")
+
+
+@filter_app.command("unblock")
+def filter_unblock(target: str = FILTER_TARGET_ARG, domains: list[str] = FILTER_DOMAINS_ARG) -> None:
+    """Remove domains from a target's block list."""
+    n = _run(lambda c: _async_value(sum(c.filter.remove(target, d, block=True) for d in domains)))
+    console.print(f"removed {n} block pattern(s)")
+
+
+@filter_app.command("unallow")
+def filter_unallow(target: str = FILTER_TARGET_ARG, domains: list[str] = FILTER_DOMAINS_ARG) -> None:
+    """Remove domains from a target's allow list."""
+    n = _run(lambda c: _async_value(sum(c.filter.remove(target, d, block=False) for d in domains)))
+    console.print(f"removed {n} allow pattern(s)")
+
+
+@filter_app.command("list")
+def filter_list(
+    target: str = typer.Argument("", help="Narrow to one group, owner or device. Omit for all scopes."),
+) -> None:
+    """Show filtering modes and the allow/deny lists."""
+
+    def go(c: Ctx) -> tuple[list[tuple[str, str, str]], list[tuple[str, str, str, str]]]:
+        rules = c.filter.rules(target or None)
+        return c.filter.modes(), rules
+
+    modes, rules = _run(lambda c: _async_value(go(c)))
+    if modes:
+        console.print("[bold]Modes[/bold]")
+        for kind, value, mode in modes:
+            console.print(f"  {kind}:{value or 'all':20} {mode}")
+    else:
+        console.print("No filtering modes set (everything is off).")
+    if rules:
+        console.print("[bold]Rules[/bold]")
+        for kind, value, list_kind, pattern in rules:
+            console.print(f"  [{list_kind:5}] {kind}:{value or 'all':20} {pattern}")
+
+
+@filter_app.command("status")
+def filter_status() -> None:
+    """Whether the DNS filter daemon is running and a summary of scopes with a mode set."""
+    running = dns_running(Settings.from_env().data_dir)
+    console.print(f"DNS filter daemon: {'[green]running[/green]' if running else '[red]not running[/red]'}")
+    modes = _run(lambda c: _async_value(c.filter.modes()))
+    if not modes:
+        console.print("No scopes are filtered.")
+        return
+    for kind, value, mode in modes:
+        console.print(f"  {kind}:{value or 'all':20} {mode}")
+
+
+@dns_app.command("run")
+def dns_run(
+    upstream: str = typer.Option(DEFAULT_UPSTREAM, help="Upstream resolver to forward allowed queries to."),
+    port: int = typer.Option(53, help="UDP port to listen on."),
+    listen: str = typer.Option("0.0.0.0", help="Address to bind."),
+) -> None:
+    """Run the DNS filter daemon in the foreground. Needs root for port 53 (sudo -E).
+
+    Point the router's DHCP DNS at this machine so every device resolves through it.
+    """
+    import logging as _logging
+
+    _logging.basicConfig(level=_logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
+    settings = Settings.from_env()
+    try:
+        asyncio.run(run_dns(settings, upstream=upstream, port=port, listen_host=listen))
+    except PermissionError as err:
+        console.print(f"[red]cannot bind port {port} (need root?): {err}[/red]")
+        raise typer.Exit(1) from err
+
+
+@dns_app.command("status")
+def dns_status() -> None:
+    """Show whether the DNS filter daemon is enforcing."""
+    running = dns_running(Settings.from_env().data_dir)
+    console.print(f"DNS filter daemon: {'[green]running[/green]' if running else '[red]not running[/red]'}")
 
 
 # -- background watcher (launchd) -------------------------------------------

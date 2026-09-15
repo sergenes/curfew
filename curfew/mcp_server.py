@@ -23,7 +23,9 @@ from curfew.scheduler import format_days, is_active
 from curfew.services import status as status_service
 from curfew.services.control import ControlService
 from curfew.services.devices import DeviceService, humanize
+from curfew.services.dns import dns_running
 from curfew.services.eclipse import EclipseService
+from curfew.services.filtering import FilterService
 from curfew.soap import SoapClient
 from curfew.vendor import VendorDb
 
@@ -80,6 +82,10 @@ class _State:
         svc = self.devices()
         assert self.settings is not None
         return EclipseService(svc.client, svc.registry, self.settings)
+
+    def filtering(self) -> FilterService:
+        svc = self.devices()
+        return FilterService(svc.registry)
 
 
 state = _State()
@@ -526,6 +532,66 @@ async def list_paused() -> dict[str, Any]:
     """Devices currently held in Eclipse Pause, and whether the enforcement daemon is running."""
     ecl = state.eclipse()
     return {"enforcing": ecl.enforcing(), "paused": [_model(p) for p in ecl.list_paused()]}
+
+
+# -- DNS website filter ---------------------------------------------------------
+
+
+@server.tool(annotations=LOCAL_WRITE)
+async def set_filter_mode(target: str, mode: str) -> dict[str, Any]:
+    """Set the website filter mode for a group, owner, device, or 'all'.
+
+    mode: 'off', 'blacklist' (block the block list) or 'whitelist' (allow only the allow list).
+    Enforced by the DNS filter daemon; the response says whether it is running.
+    """
+    svc = state.filtering()
+    try:
+        label, applied = svc.set_mode(target, mode)
+    except (LookupError, ValueError) as err:
+        raise ToolError(str(err)) from err
+    assert state.settings is not None
+    return {"scope": label, "mode": applied, "daemon_running": dns_running(state.settings.data_dir)}
+
+
+@server.tool(annotations=LOCAL_WRITE)
+async def set_filter_rule(
+    target: str, domains: list[str], list_kind: str = "block", remove: bool = False
+) -> dict[str, Any]:
+    """Add or remove domains on a scope's block or allow list.
+
+    target: group, owner, device or 'all'. list_kind: 'block' or 'allow'. remove=true deletes them.
+    Domains match by suffix, so youtube.com also covers www.youtube.com.
+    """
+    if list_kind not in {"block", "allow"}:
+        raise ToolError("list_kind must be 'block' or 'allow'")
+    svc = state.filtering()
+    block = list_kind == "block"
+    try:
+        if remove:
+            n = sum(svc.remove(target, d, block=block) for d in domains)
+            return {"removed": n, "list": list_kind}
+        added = [svc.add(target, d, block=block)[1] for d in domains]
+    except (LookupError, ValueError) as err:
+        raise ToolError(str(err)) from err
+    return {"added": added, "list": list_kind}
+
+
+@server.tool(annotations=READ_ONLY)
+async def list_filters(target: str = "") -> dict[str, Any]:
+    """Website filter modes and rules, optionally narrowed to one group, owner or device."""
+    svc = state.filtering()
+    try:
+        rules = svc.rules(target or None)
+    except (LookupError, ValueError) as err:
+        raise ToolError(str(err)) from err
+    assert state.settings is not None
+    return {
+        "daemon_running": dns_running(state.settings.data_dir),
+        "modes": [{"scope_kind": k, "scope_value": v, "mode": m} for k, v, m in svc.modes()],
+        "rules": [
+            {"scope_kind": k, "scope_value": v, "list": lk, "pattern": p} for k, v, lk, p in rules
+        ],
+    }
 
 
 def _resolve_members(ecl: EclipseService, target: str) -> tuple[str, list[Any]]:
