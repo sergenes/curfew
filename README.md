@@ -197,15 +197,23 @@ Run it by hand with `uv run curfew-mcp` (stdio).
 
 The instant layers, `eclipse` (ARP pause) and `dns` (the website filter), are meant to run all the time on a machine that is always on and on your LAN. A small wired Linux box is ideal, and wired is the better host: it is stable and adds no wifi airtime on the sender side. These steps are for Rocky/RHEL (`dnf`); on Debian or Ubuntu use `apt` and the `libpcap0.8` package.
 
-Install the toolchain and system deps, then set up the project:
+Install the toolchain and system deps, then set up the project **under `/opt`, not a home directory**. SELinux (enforcing on Rocky by default) will not let a systemd service execute a binary under `/home`, so a checkout in `/home` fails with `203/EXEC`.
 
 ```
-sudo dnf install -y git libpcap
+sudo dnf install -y git libpcap policycoreutils-python-utils
 curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
-git clone https://github.com/sergenes/curfew.git ~/curfew
-cd ~/curfew && uv sync
+sudo mkdir -p /opt/curfew && sudo chown "$USER":"$USER" /opt/curfew
+git clone https://github.com/sergenes/curfew.git /opt/curfew
+cd /opt/curfew && uv sync
 cp .env.example .env         # fill in CURFEW_HOST, CURFEW_USER, CURFEW_PASSWORD
 uv run curfew status         # confirm it reaches the router
+```
+
+Give the venv an executable SELinux label so systemd may run it (skip if SELinux is disabled):
+
+```
+sudo semanage fcontext -a -t bin_t "/opt/curfew/\.venv/bin(/.*)?"
+sudo restorecon -Rv /opt/curfew/.venv/bin
 ```
 
 The DNS filter answers other devices, so open its port and check nothing else already holds it:
@@ -215,7 +223,7 @@ sudo firewall-cmd --add-port=53/udp --permanent && sudo firewall-cmd --reload
 sudo ss -ulpn | grep ':53' || true   # if systemd-resolved is listening, free it before starting the filter
 ```
 
-Run both as systemd services so they start at boot and restart on failure. `ExecStart` points at the venv's `curfew` binary, so there is no PATH or `uv` dependency, and `WorkingDirectory` is the checkout so `.env` is found. Replace `/home/USER/curfew` with your path.
+Run both as systemd services so they start at boot and restart on failure. `ExecStart` points at the venv's `curfew` binary, so there is no PATH or `uv` dependency, and `WorkingDirectory` is the checkout so `.env` is found. Set `--iface` to your LAN interface (from `ip -br a`, e.g. `eno1`).
 
 ```
 sudo tee /etc/systemd/system/curfew-eclipse.service >/dev/null <<'EOF'
@@ -227,8 +235,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/USER/curfew
-ExecStart=/home/USER/curfew/.venv/bin/curfew eclipse run --interval 0.2
+WorkingDirectory=/opt/curfew
+ExecStart=/opt/curfew/.venv/bin/curfew eclipse run --interval 0.2 --iface eno1
 Restart=on-failure
 RestartSec=3
 
@@ -245,8 +253,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=root
-WorkingDirectory=/home/USER/curfew
-ExecStart=/home/USER/curfew/.venv/bin/curfew dns run
+WorkingDirectory=/opt/curfew
+ExecStart=/opt/curfew/.venv/bin/curfew dns run
 Restart=on-failure
 RestartSec=3
 
@@ -259,7 +267,9 @@ sudo systemctl enable --now curfew-eclipse curfew-dns
 journalctl -u curfew-eclipse -u curfew-dns -f
 ```
 
-Then point the router's DHCP DNS at this box so every device resolves through the filter. If `eclipse` logs that it cannot resolve the router MAC on a box with more than one interface, add `--iface <name>` (from `ip -br a`) to its `ExecStart` and restart the service.
+Then point the router's DHCP DNS at this box so every device resolves through the filter.
+
+The services run as **root**, so they use `/root/.curfew` for the registry and pause state. Manage the box with sudo so your commands share that same database, e.g. `sudo /opt/curfew/.venv/bin/curfew pause <mac>`; running the CLI as an unprivileged user would read a different registry the daemons never see.
 
 ## Development
 
