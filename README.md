@@ -193,6 +193,74 @@ Website filter: `set_filter_mode`, `set_filter_rule` (add or remove block/allow 
 
 Run it by hand with `uv run curfew-mcp` (stdio).
 
+## Running on an always-on Linux box (systemd)
+
+The instant layers, `eclipse` (ARP pause) and `dns` (the website filter), are meant to run all the time on a machine that is always on and on your LAN. A small wired Linux box is ideal, and wired is the better host: it is stable and adds no wifi airtime on the sender side. These steps are for Rocky/RHEL (`dnf`); on Debian or Ubuntu use `apt` and the `libpcap0.8` package.
+
+Install the toolchain and system deps, then set up the project:
+
+```
+sudo dnf install -y git libpcap
+curl -LsSf https://astral.sh/uv/install.sh | sh && source ~/.local/bin/env
+git clone https://github.com/sergenes/curfew.git ~/curfew
+cd ~/curfew && uv sync
+cp .env.example .env         # fill in CURFEW_HOST, CURFEW_USER, CURFEW_PASSWORD
+uv run curfew status         # confirm it reaches the router
+```
+
+The DNS filter answers other devices, so open its port and check nothing else already holds it:
+
+```
+sudo firewall-cmd --add-port=53/udp --permanent && sudo firewall-cmd --reload
+sudo ss -ulpn | grep ':53' || true   # if systemd-resolved is listening, free it before starting the filter
+```
+
+Run both as systemd services so they start at boot and restart on failure. `ExecStart` points at the venv's `curfew` binary, so there is no PATH or `uv` dependency, and `WorkingDirectory` is the checkout so `.env` is found. Replace `/home/USER/curfew` with your path.
+
+```
+sudo tee /etc/systemd/system/curfew-eclipse.service >/dev/null <<'EOF'
+[Unit]
+Description=Curfew Eclipse Pause (ARP enforcement)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/USER/curfew
+ExecStart=/home/USER/curfew/.venv/bin/curfew eclipse run --interval 0.2
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo tee /etc/systemd/system/curfew-dns.service >/dev/null <<'EOF'
+[Unit]
+Description=Curfew DNS website filter
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/home/USER/curfew
+ExecStart=/home/USER/curfew/.venv/bin/curfew dns run
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl enable --now curfew-eclipse curfew-dns
+journalctl -u curfew-eclipse -u curfew-dns -f
+```
+
+Then point the router's DHCP DNS at this box so every device resolves through the filter. If `eclipse` logs that it cannot resolve the router MAC on a box with more than one interface, add `--iface <name>` (from `ip -br a`) to its `ExecStart` and restart the service.
+
 ## Development
 
 ```
