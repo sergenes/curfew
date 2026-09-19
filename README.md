@@ -267,7 +267,15 @@ sudo systemctl enable --now curfew-eclipse curfew-dns
 journalctl -u curfew-eclipse -u curfew-dns -f
 ```
 
-Then point the router's DHCP DNS at this box so every device resolves through the filter.
+### Pointing devices at the filter
+
+For the filter to see a device's lookups, that device has to use the box as its DNS server. There are two ways, depending on your router.
+
+If the router lets you set the DNS handed out by DHCP (usually under LAN Setup / DHCP, a field separate from the WAN DNS), set it to the box's IP. Every device then uses the filter on its next lease.
+
+Many routers, the NETGEAR CAX80 included, have no such field: LAN Setup only has the DHCP range, not a client DNS server. Do not work around this by changing the router's own DNS (the "Domain Name Server Address" under Internet Setup). That is the router's upstream resolver, and pointing it at a LAN box makes the router's connectivity check fail, so the whole house loses internet. Leave it on "get automatically from ISP".
+
+Instead, set the DNS on each device you want filtered. On iOS: Settings, Wi-Fi, tap the network, Configure DNS, Manual, remove the existing entries, add the box's IP, Save. On Android it is under the network's IP settings, and on a laptop under the adapter's DNS settings. This targets exactly the devices you care about, works with any router, gives the filter each device's real IP so per-device rules apply, and cannot take down the house if the box is off. Pair it with the device's parental controls (iOS Screen Time) so the DNS setting cannot be changed back.
 
 The services run as **root**, so they use `/root/.curfew` for the registry and pause state. Manage the box with sudo so your commands share that same database, e.g. `sudo /opt/curfew/.venv/bin/curfew pause <mac>`; running the CLI as an unprivileged user would read a different registry the daemons never see.
 
