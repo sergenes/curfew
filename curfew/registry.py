@@ -81,6 +81,22 @@ CREATE TABLE IF NOT EXISTS pauses (
     since  TEXT NOT NULL,
     reason TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS filter_modes (
+    scope_kind  TEXT NOT NULL,   -- 'global' | 'group' | 'owner' | 'device'
+    scope_value TEXT NOT NULL,   -- tag / owner / MAC; '' for global
+    mode        TEXT NOT NULL,   -- 'off' | 'blacklist' | 'whitelist'
+    PRIMARY KEY (scope_kind, scope_value)
+);
+CREATE TABLE IF NOT EXISTS filter_rules (
+    id          INTEGER PRIMARY KEY,
+    scope_kind  TEXT NOT NULL,
+    scope_value TEXT NOT NULL,
+    list_kind   TEXT NOT NULL,   -- 'block' | 'allow'
+    pattern     TEXT NOT NULL,   -- a domain (suffix match) or an IP/CIDR (gateway only)
+    created_at  TEXT NOT NULL,
+    UNIQUE (scope_kind, scope_value, list_kind, pattern)
+);
+CREATE INDEX IF NOT EXISTS filter_rules_scope ON filter_rules(scope_kind, scope_value);
 """
 
 MIGRATIONS = [
@@ -322,6 +338,8 @@ class Registry:
             self._db.execute("DELETE FROM sessions WHERE mac=?", (mac,))
             self._db.execute("DELETE FROM overrides WHERE mac=?", (mac,))
             self._db.execute("DELETE FROM pauses WHERE mac=?", (mac,))
+            self._db.execute("DELETE FROM filter_modes WHERE scope_kind='device' AND scope_value=?", (mac,))
+            self._db.execute("DELETE FROM filter_rules WHERE scope_kind='device' AND scope_value=?", (mac,))
             return self._db.execute("DELETE FROM devices WHERE mac=?", (mac,)).rowcount > 0
 
     def merge(self, old_mac: str, new_mac: str) -> KnownDevice:
@@ -376,6 +394,22 @@ class Registry:
                     (new, n["last_ip"], old_pause["since"], old_pause["reason"]),
                 )
             self._db.execute("DELETE FROM pauses WHERE mac=?", (old,))
+
+            # Move device-scoped filter mode and rules to the survivor (keep the survivor's own on clash).
+            self._db.execute(
+                "INSERT OR IGNORE INTO filter_modes (scope_kind, scope_value, mode) "
+                "SELECT 'device', ?, mode FROM filter_modes WHERE scope_kind='device' AND scope_value=?",
+                (new, old),
+            )
+            self._db.execute("DELETE FROM filter_modes WHERE scope_kind='device' AND scope_value=?", (old,))
+            self._db.execute(
+                "INSERT OR IGNORE INTO filter_rules "
+                "(scope_kind, scope_value, list_kind, pattern, created_at) "
+                "SELECT 'device', ?, list_kind, pattern, created_at FROM filter_rules "
+                "WHERE scope_kind='device' AND scope_value=?",
+                (new, old),
+            )
+            self._db.execute("DELETE FROM filter_rules WHERE scope_kind='device' AND scope_value=?", (old,))
 
             self._db.execute("DELETE FROM devices WHERE mac=?", (old,))
             self._db.execute("COMMIT")
@@ -530,6 +564,72 @@ class Registry:
         with self._lock:
             row = self._db.execute("SELECT scanned_at FROM scans ORDER BY id DESC LIMIT 1").fetchone()
         return _parse(row["scanned_at"]) if row else None
+
+    # -- DNS filter: per-scope mode and allow/deny rules ------------------
+
+    def set_filter_mode(self, scope_kind: str, scope_value: str, mode: str) -> None:
+        """Set the filtering mode ('off', 'blacklist', 'whitelist') for a scope. 'off' clears it."""
+        with self._lock:
+            if mode == "off":
+                self._db.execute(
+                    "DELETE FROM filter_modes WHERE scope_kind=? AND scope_value=?",
+                    (scope_kind, scope_value),
+                )
+            else:
+                self._db.execute(
+                    """INSERT INTO filter_modes (scope_kind, scope_value, mode) VALUES (?, ?, ?)
+                       ON CONFLICT(scope_kind, scope_value) DO UPDATE SET mode=excluded.mode""",
+                    (scope_kind, scope_value, mode),
+                )
+
+    def get_filter_mode(self, scope_kind: str, scope_value: str) -> str:
+        with self._lock:
+            row = self._db.execute(
+                "SELECT mode FROM filter_modes WHERE scope_kind=? AND scope_value=?",
+                (scope_kind, scope_value),
+            ).fetchone()
+        return row["mode"] if row else "off"
+
+    def filter_modes(self) -> list[tuple[str, str, str]]:
+        with self._lock:
+            rows = self._db.execute(
+                "SELECT scope_kind, scope_value, mode FROM filter_modes ORDER BY scope_kind, scope_value"
+            ).fetchall()
+        return [(r["scope_kind"], r["scope_value"], r["mode"]) for r in rows]
+
+    def add_filter_rule(self, scope_kind: str, scope_value: str, list_kind: str, pattern: str) -> None:
+        with self._lock:
+            self._db.execute(
+                """INSERT INTO filter_rules (scope_kind, scope_value, list_kind, pattern, created_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(scope_kind, scope_value, list_kind, pattern) DO NOTHING""",
+                (scope_kind, scope_value, list_kind, pattern, _iso(datetime.now(UTC))),
+            )
+
+    def remove_filter_rule(self, scope_kind: str, scope_value: str, list_kind: str, pattern: str) -> bool:
+        with self._lock:
+            return (
+                self._db.execute(
+                    """DELETE FROM filter_rules
+                       WHERE scope_kind=? AND scope_value=? AND list_kind=? AND pattern=?""",
+                    (scope_kind, scope_value, list_kind, pattern),
+                ).rowcount
+                > 0
+            )
+
+    def filter_rules(
+        self, scope_kind: str | None = None, scope_value: str | None = None
+    ) -> list[tuple[str, str, str, str]]:
+        """(scope_kind, scope_value, list_kind, pattern), optionally narrowed to one scope."""
+        query = "SELECT scope_kind, scope_value, list_kind, pattern FROM filter_rules"
+        params: tuple[str, ...] = ()
+        if scope_kind is not None:
+            query += " WHERE scope_kind=? AND scope_value=?"
+            params = (scope_kind, scope_value or "")
+        query += " ORDER BY scope_kind, scope_value, list_kind, pattern"
+        with self._lock:
+            rows = self._db.execute(query, params).fetchall()
+        return [(r["scope_kind"], r["scope_value"], r["list_kind"], r["pattern"]) for r in rows]
 
 
 # -- helpers -------------------------------------------------------------
