@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from curfew.config import Settings
-from curfew.dnsfilter import DnsError, build_block_reply, is_blocked, parse_qname
+from curfew.dnsfilter import DnsError, Policy, build_block_reply, is_blocked, parse_qname
 from curfew.registry import Registry
 from curfew.services.filtering import FilterService
 
@@ -72,6 +72,7 @@ async def run_dns(
     port: int = 53,
     listen_host: str = "0.0.0.0",
     heartbeat_s: float = 5.0,
+    policy_ttl_s: float = 5.0,
 ) -> None:
     """Serve filtered DNS until interrupted. Needs root to bind port 53."""
     registry = Registry(settings.registry_path)
@@ -82,13 +83,25 @@ async def run_dns(
     ids = itertools.count()
     server: _ServerProtocol | None = None
     upstream_proto: _UpstreamProtocol | None = None
+    policy_cache: dict[str, tuple[float, Policy]] = {}
+
+    def policy_for(ip: str) -> Policy:
+        # Cache each client's resolved policy briefly, so we don't scan the registry on every query.
+        # A new pause, block or rule takes effect within policy_ttl_s.
+        now = loop.time()
+        hit = policy_cache.get(ip)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        pol = svc.policy_for_ip(ip)
+        policy_cache[ip] = (now + policy_ttl_s, pol)
+        return pol
 
     def handle_query(data: bytes, addr: tuple[str, int]) -> None:
         try:
             qname = parse_qname(data)
         except DnsError:
             return
-        policy = svc.policy_for_ip(addr[0])
+        policy = policy_for(addr[0])
         if is_blocked(qname, policy):
             log.info("blocked %s for %s (%s)", qname, addr[0], policy.scope)
             if server is not None and server.transport is not None:

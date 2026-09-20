@@ -82,8 +82,20 @@ class FilterService:
         allow = {r[3] for r in self.registry.filter_rules(kind, value) if r[2] == "allow"}
         return Policy(mode=Mode(mode), block=block, allow=allow, scope=label)
 
+    def _is_paused(self, mac: str) -> bool:
+        m = normalize_mac(mac)
+        return any(normalize_mac(p.mac) == m for p in self.registry.pauses())
+
     def policy_for_device(self, device: KnownDevice) -> Policy:
-        """The most specific scope with a mode set wins: device, then owner, then a group, then global."""
+        """The device's effective policy. A paused or blocked device resolves nothing.
+
+        Most specific filter scope otherwise wins: device, then owner, then a group, then global.
+        """
+        # Mirror the cutoff at the DNS layer: a paused (Eclipse) or router-blocked device gets an
+        # empty whitelist, so every lookup is refused. This gives the router block an immediate bite.
+        if device.access_state == "block" or self._is_paused(device.mac):
+            reason = "paused" if self._is_paused(device.mac) else "blocked"
+            return Policy(mode=Mode.WHITELIST, allow=set(), scope=reason)
         p = self._policy_for_scope("device", device.mac, f"device {device.display_name}")
         if p:
             return p
