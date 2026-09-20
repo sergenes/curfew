@@ -99,3 +99,29 @@ def test_remove_and_list_rules(svc: FilterService) -> None:
 def test_invalid_mode_rejected(svc: FilterService) -> None:
     with pytest.raises(ValueError):
         svc.set_mode("kids", "sometimes")
+
+
+def test_paused_device_resolves_nothing(svc: FilterService) -> None:
+    svc.registry.set_pause(KID_MAC, "192.168.1.93")
+    policy = svc.policy_for_ip("192.168.1.93")
+    assert policy.mode is Mode.WHITELIST and policy.allow == set()  # empty whitelist blocks everything
+    assert policy.scope == "paused"
+
+
+def test_router_blocked_device_resolves_nothing(svc: FilterService) -> None:
+    svc.registry.set_access_state(KID_MAC, allow=False)
+    policy = svc.policy_for_ip("192.168.1.93")
+    assert policy.mode is Mode.WHITELIST and policy.allow == set()
+    assert policy.scope == "blocked"
+
+
+def test_cut_state_overrides_filter_rules(svc: FilterService) -> None:
+    # even with a permissive group whitelist, a paused device still resolves nothing
+    svc.set_mode("kids", "whitelist")
+    svc.add("kids", "school.edu", block=False)
+    svc.registry.set_pause(KID_MAC, "192.168.1.93")
+    assert svc.policy_for_ip("192.168.1.93").scope == "paused"
+
+
+def test_uncut_device_resolves_normally(svc: FilterService) -> None:
+    assert svc.policy_for_ip("192.168.1.50").mode is Mode.OFF  # dad's laptop, not cut, no filter

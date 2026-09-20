@@ -176,6 +176,8 @@ uv run curfew dns status
 Two modes per scope: `blacklist` refuses the listed domains and forwards the rest; `whitelist` forwards only the listed domains and refuses everything else.
 The most specific scope with a mode set wins, in the order device, owner, group, then a global default, so you can filter a whole group and still exempt one device.
 Domains match by suffix, so `youtube.com` also covers `www.youtube.com`.
+A device that is paused (Eclipse) or blocked (Access Control) resolves nothing: the DNS filter refuses all of its lookups, so a single block bites at the router, the ARP layer, and DNS together.
+Each client's policy is cached for a few seconds, so a new pause, block or rule takes effect within that window rather than on the very next lookup.
 
 One-time setup: point the router's DHCP DNS at the machine running the daemon, so every device resolves through it.
 Honest limits: it filters by domain, so it is all-YouTube not just Shorts; a device using its own encrypted DNS (DoH) can route around it unless you also block that; and it cannot stop video already sitting in a device's buffer.
