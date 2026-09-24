@@ -8,9 +8,30 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, time, timedelta
 
-from curfew.models import AccessOverride, KnownDevice, Rule
+from curfew.models import AccessOverride, Band, KnownDevice, Rule
 
 DAY_NAMES = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+GUEST_KIND = "guest"
+GUEST_TARGETS = {"both": (Band.GHZ_2_4, Band.GHZ_5), "2.4": (Band.GHZ_2_4,), "5": (Band.GHZ_5,)}
+
+
+def guest_bands(rule: Rule) -> tuple[Band, ...]:
+    """Bands a guest-network rule covers. Empty for any rule that is not a guest rule."""
+    if rule.kind != GUEST_KIND:
+        return ()
+    return GUEST_TARGETS.get(rule.target, ())
+
+
+def desired_guest(rules: list[Rule], band: Band, now_local: datetime) -> bool | None:
+    """True = guest network on, False = off, None = no guest rule covers this band.
+
+    A guest rule's window is when the guest network is off, like a bedtime window blocks devices.
+    """
+    mine = [r for r in rules if r.enabled and band in guest_bands(r)]
+    if not mine:
+        return None
+    return not any(is_active(r, now_local) for r in mine)
 
 
 def parse_days(text: str) -> list[int]:

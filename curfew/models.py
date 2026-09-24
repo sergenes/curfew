@@ -170,8 +170,8 @@ class Rule(BaseModel):
 
     id: int | None = None
     name: str
-    kind: str  # "group", "owner" or "device"
-    target: str  # tag name, owner name, or MAC
+    kind: str  # "group", "owner", "device", or "guest" (the guest wifi network)
+    target: str  # tag name, owner name, MAC, or for guest rules the band: "both", "2.4" or "5"
     start: str  # "21:00"
     end: str  # "07:00"; earlier than start means the window crosses midnight
     days: list[int] = Field(default_factory=lambda: list(range(7)))  # 0 = Monday

@@ -6,13 +6,17 @@ Every change is appended to <data_dir>/changes.log.
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
 from curfew import actions
-from curfew.models import AccessChange, Band, KnownDevice, Rule
+from curfew.models import AccessChange, Band, KnownDevice, Rule, ScanDelta
 from curfew.registry import Registry
 from curfew.scheduler import (
+    GUEST_KIND,
+    GUEST_TARGETS,
+    desired_guest,
     desired_state,
     format_days,
     next_boundary,
@@ -26,6 +30,14 @@ from curfew.soap import SoapClient
 from curfew.vendor import normalize_mac
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class Enforcement:
+    """What one schedule pass changed: device access, and the guest network per band."""
+
+    devices: list[tuple[KnownDevice, bool]] = field(default_factory=list)
+    guest: list[tuple[Band, bool]] = field(default_factory=list)
 
 
 class ControlService:
@@ -148,6 +160,27 @@ class ControlService:
         self._log("schedule-add", saved.name, f"{kind} {target} {start}-{end} {format_days(saved.days)}")
         return saved
 
+    def add_guest_schedule(
+        self, *, start: str, end: str, days: str = "daily", band: str = "both", name: str = ""
+    ) -> Rule:
+        """Turn the guest network off every day between start and end, and back on after."""
+        if band not in GUEST_TARGETS:
+            raise ValueError("band must be both, 2.4 or 5")
+        parse_hhmm(start), parse_hhmm(end)  # validate
+        rule = Rule(
+            name=name or f"guest {start}-{end}",
+            kind=GUEST_KIND,
+            target=band,
+            start=start,
+            end=end,
+            days=parse_days(days),
+        )
+        saved = self.registry.add_rule(rule)
+        self._log(
+            "schedule-add", saved.name, f"guest wifi {band} off {start}-{end} {format_days(saved.days)}"
+        )
+        return saved
+
     def remove_schedule(self, rule_id: int) -> bool:
         removed = self.registry.remove_rule(rule_id)
         if removed:
@@ -187,6 +220,50 @@ class ControlService:
             self._log("allow" if wanted else "block", f"{device.display_name} {device.mac}", "schedule")
             changes.append((device, wanted))
         return changes
+
+    async def apply_guest_schedules(self, *, now: datetime | None = None) -> list[tuple[Band, bool]]:
+        """Switch the guest network per band when a guest schedule window starts or ends.
+
+        Edge-triggered: it acts only when the scheduled state changes from what it last applied, so a
+        manual `guest on/off` in between is respected until the next window boundary. On first sight
+        of a rule it enforces "off" if the window is already active, but never forces the guest
+        network on, so adding a night rule during the day leaves the current state alone.
+        """
+        now = now or datetime.now(UTC)
+        now_local = now.astimezone()
+        rules = [r for r in self.registry.rules() if r.enabled]
+        changes: list[tuple[Band, bool]] = []
+        for band in (Band.GHZ_2_4, Band.GHZ_5):
+            key = f"guest_schedule:{band.value}"
+            wanted = desired_guest(rules, band, now_local)
+            if wanted is None:
+                self.registry.clear_state(key)  # no rule covers this band any more
+                continue
+            wanted_s = "on" if wanted else "off"
+            last = self.registry.get_state(key)
+            if last == wanted_s:
+                continue
+            self.registry.set_state(key, wanted_s)
+            if last is None and wanted:
+                continue  # first sight outside the window: leave the guest network as it is
+            current = (await actions.get_wlan_info(self.client, band)).guest_enabled
+            if current == wanted:
+                continue
+            await actions.set_guest_wifi(self.client, band, wanted)
+            self._log("guest-wifi", band.value, f"{wanted_s} by schedule")
+            changes.append((band, wanted))
+        return changes
+
+    async def enforce(self, *, now: datetime | None = None) -> Enforcement:
+        """Apply every schedule once: device access and the guest network."""
+        devices = await self.apply_schedules(now=now)
+        guest = await self.apply_guest_schedules(now=now)
+        return Enforcement(devices=devices, guest=guest)
+
+    async def tick(self, *, now: datetime | None = None) -> tuple[ScanDelta, Enforcement]:
+        """One watcher cycle: refresh the registry from the router, then enforce schedules."""
+        delta = await self.devices.scan()
+        return delta, await self.enforce(now=now)
 
     # -- other writes ----------------------------------------------------------
 

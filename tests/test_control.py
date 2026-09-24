@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -15,7 +16,7 @@ from curfew.registry import Registry
 from curfew.services.control import ControlService
 from curfew.services.devices import UnknownDevice
 from curfew.soap import SoapClient
-from tests.conftest import FakeRouter, code_only
+from tests.conftest import FakeRouter, code_only, fixture_text
 
 NY = ZoneInfo("America/New_York")
 SWITCH_A = "98:DA:C4:00:00:01"
@@ -177,3 +178,108 @@ async def test_clear_access_control_unblocks_known_and_orphan(
 async def test_clear_access_control_with_nothing_blocked(ctl: ControlService) -> None:
     assert ctl.blocked_macs() == []
     assert await ctl.clear_access_control() == []
+
+
+# -- watcher tick and guest-network schedules ------------------------------------
+
+
+async def test_tick_scans_then_enforces_schedules(ctl: ControlService, router: FakeRouter) -> None:
+    # Regression: the watcher used to scan without ever applying schedules, so bedtime never fired.
+    ctl.add_schedule("kids", start="21:00", end="07:00", days="daily", name="bedtime")
+    night = datetime(2026, 9, 13, 2, 0, tzinfo=NY).astimezone(UTC)
+    delta, result = await ctl.tick(now=night)
+    assert delta.present > 0  # it did scan
+    assert {d.mac for d, allow in result.devices} == {SWITCH_A, SWITCH_B}
+    assert all(not allow for _, allow in result.devices)
+
+
+class GuestWifi:
+    """A stateful stand-in for the router's guest network on both bands."""
+
+    def __init__(self, router: FakeRouter, *, on: bool) -> None:
+        self.state = {"2.4": on, "5": on}
+        self.writes: list[tuple[str, bool]] = []
+        for band, get_action, set_action in (
+            ("2.4", "GetGuestAccessEnabled", "SetGuestAccessEnabled"),
+            ("5", "Get5GGuestAccessEnabled", "Set5GGuestAccessEnabled"),
+        ):
+            router.responses[f"WLANConfiguration:1#{get_action}"] = self._getter(band, get_action)
+            router.responses[f"WLANConfiguration:1#{set_action}"] = self._setter(band)
+        for action in ("GetInfo", "Get5GInfo", "GetGuestAccessNetworkInfo", "Get5GGuestAccessNetworkInfo"):
+            router.serve_fixture("WLANConfiguration:1", action)
+
+    def _getter(self, band: str, action: str) -> Any:
+        template = fixture_text(f"WLANConfiguration_{action}")
+
+        def handler(_req: httpx.Request) -> httpx.Response:
+            value = "1" if self.state[band] else "0"
+            body = re.sub(r"<NewGuestAccessEnabled>\d</", f"<NewGuestAccessEnabled>{value}</", template)
+            return httpx.Response(200, text=body)
+
+        return handler
+
+    def _setter(self, band: str) -> Any:
+        def handler(req: httpx.Request) -> httpx.Response:
+            m = re.search(r"<NewGuestAccessEnabled>(\d)<", req.content.decode())
+            self.state[band] = bool(m and m.group(1) == "1")
+            self.writes.append((band, self.state[band]))
+            return httpx.Response(200, text=code_only("000"))
+
+        return handler
+
+
+NIGHT = datetime(2026, 9, 13, 2, 0, tzinfo=NY).astimezone(UTC)  # inside 21:00-07:00 in NY and UTC
+DAY = datetime(2026, 9, 13, 13, 0, tzinfo=NY).astimezone(UTC)  # outside it in both
+
+
+async def test_guest_schedule_turns_guest_off_at_night_and_on_in_the_morning(
+    ctl: ControlService, router: FakeRouter
+) -> None:
+    wifi = GuestWifi(router, on=True)
+    rule = ctl.add_guest_schedule(start="21:00", end="07:00", days="daily", name="guest-night")
+    assert rule.kind == "guest" and rule.target == "both"
+
+    changes = await ctl.apply_guest_schedules(now=NIGHT)
+    assert sorted((b.value, on) for b, on in changes) == [("2.4GHz", False), ("5GHz", False)]
+    assert wifi.state == {"2.4": False, "5": False}
+
+    next_morning = datetime(2026, 9, 13, 12, 0, tzinfo=NY).astimezone(UTC)
+    changes = await ctl.apply_guest_schedules(now=next_morning)
+    assert all(on for _, on in changes) and len(changes) == 2
+    assert wifi.state == {"2.4": True, "5": True}
+    assert "guest-wifi" in ctl.changes_log.read_text()
+
+
+async def test_guest_schedule_respects_a_manual_change_until_the_next_edge(
+    ctl: ControlService, router: FakeRouter
+) -> None:
+    wifi = GuestWifi(router, on=True)
+    ctl.add_guest_schedule(start="21:00", end="07:00")
+    await ctl.apply_guest_schedules(now=NIGHT)  # scheduled off
+    wifi.state["2.4"] = True  # a parent turns the guest network back on by hand
+    writes_before = len(wifi.writes)
+    later = NIGHT.replace(minute=30)
+    assert await ctl.apply_guest_schedules(now=later) == []  # no edge, so no fight
+    assert len(wifi.writes) == writes_before and wifi.state["2.4"] is True
+
+
+async def test_guest_schedule_never_forces_guest_on_at_first_sight(
+    ctl: ControlService, router: FakeRouter
+) -> None:
+    wifi = GuestWifi(router, on=False)  # guest is off on purpose
+    ctl.add_guest_schedule(start="21:00", end="07:00")
+    assert await ctl.apply_guest_schedules(now=DAY) == []  # outside the window: leave it off
+    assert wifi.writes == []
+
+
+async def test_guest_schedule_band_and_removal(ctl: ControlService, router: FakeRouter) -> None:
+    wifi = GuestWifi(router, on=True)
+    rule = ctl.add_guest_schedule(start="21:00", end="07:00", band="5")
+    changes = await ctl.apply_guest_schedules(now=NIGHT)
+    assert [(b.value, on) for b, on in changes] == [("5GHz", False)]
+    assert wifi.state == {"2.4": True, "5": False}  # 2.4 untouched
+    assert rule.id is not None and ctl.remove_schedule(rule.id)
+    assert await ctl.apply_guest_schedules(now=NIGHT) == []
+    assert ctl.registry.get_state("guest_schedule:5GHz") is None  # memory cleared with the rule
+    with pytest.raises(ValueError):
+        ctl.add_guest_schedule(start="21:00", end="07:00", band="6")

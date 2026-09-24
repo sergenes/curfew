@@ -30,7 +30,7 @@ from curfew.pause import PauseError, build_network_info, eclipse_running
 from curfew.registry import Registry, parse_since
 from curfew.scheduler import format_days, is_active
 from curfew.services import status as status_service
-from curfew.services.control import ControlService
+from curfew.services.control import ControlService, Enforcement
 from curfew.services.devices import DeviceService, humanize
 from curfew.services.dns import DEFAULT_UPSTREAM, dns_running, run_dns
 from curfew.services.eclipse import EclipseService, run_daemon
@@ -133,6 +133,13 @@ def _dump(value: Any) -> None:
         value = [v.model_dump(mode="json") if isinstance(v, BaseModel) else v for v in value]
     json.dump(value, sys.stdout, indent=2, default=str)
     sys.stdout.write("\n")
+
+
+def _print_enforcement(enforced: Enforcement, *, prefix: str = "") -> None:
+    for k, allow in enforced.devices:
+        console.print(f"{prefix}{'allow' if allow else 'block':6} {k.display_name}  {k.mac}  (schedule)")
+    for band, on in enforced.guest:
+        console.print(f"{prefix}guest wifi {band.value} {'on' if on else 'off'}  (schedule)")
 
 
 def _local(dt: datetime | None) -> str:
@@ -487,13 +494,13 @@ def watch(
     interval: int = typer.Option(60, help="Seconds between scans."),
     once: bool = typer.Option(False, "--once", help="Scan one time and exit (same as `scan`)."),
 ) -> None:
-    """Keep the registry current by scanning on an interval. Prints changes as they happen."""
+    """Scan on an interval and enforce every schedule after each scan. Prints changes as they happen."""
 
     async def go(c: Ctx) -> None:
         while True:
             started = datetime.now(UTC)
             try:
-                delta = await c.devices.scan()
+                delta, enforced = await c.control.tick()
             except SoapError as err:
                 console.print(f"[red]{_local(started)} scan failed: {err}[/red]")
             else:
@@ -503,7 +510,8 @@ def watch(
                     console.print(
                         f"{_local(started)} {label:8} {k.display_name}  {k.mac}  {k.last_ip}  {k.vendor}"
                     )
-                if not changes:
+                _print_enforcement(enforced, prefix=f"{_local(started)} ")
+                if not changes and not enforced.devices and not enforced.guest:
                     console.print(f"[dim]{_local(started)} {delta.present} online, no changes[/dim]")
             if once:
                 return
@@ -688,10 +696,8 @@ def schedule_list() -> None:
     now_local = datetime.now().astimezone()
     for r in rules:
         state = "[red]active[/red]" if is_active(r, now_local) else ("off" if not r.enabled else "idle")
-        console.print(
-            f"#{r.id:<3} {r.name:24} block {r.kind} {r.target:16} "
-            f"{r.start}-{r.end} {format_days(r.days):10} {state}"
-        )
+        what = f"guest wifi off {r.target:9}" if r.kind == "guest" else f"block {r.kind} {r.target:16}"
+        console.print(f"#{r.id:<3} {r.name:24} {what} {r.start}-{r.end} {format_days(r.days):10} {state}")
 
 
 @schedule_app.command("remove")
@@ -705,15 +711,14 @@ def schedule_remove(rule_id: int = typer.Argument(help="Schedule id from `schedu
 def schedule_apply() -> None:
     """Evaluate schedules and overrides now and push any needed changes to the router."""
 
-    async def go(c: Ctx) -> list[tuple[KnownDevice, bool]]:
-        await c.devices.scan()
-        return await c.control.apply_schedules()
+    async def go(c: Ctx) -> Enforcement:
+        _, enforced = await c.control.tick()
+        return enforced
 
-    changes = _run(go)
-    if not changes:
+    enforced = _run(go)
+    if not enforced.devices and not enforced.guest:
         console.print("Nothing to change.")
-    for k, allow in changes:
-        console.print(f"{'allow' if allow else 'block':6} {k.display_name}  {k.mac}")
+    _print_enforcement(enforced)
 
 
 # -- reboot and guest wifi -----------------------------------------------------------
@@ -738,6 +743,30 @@ def guest_on(band: str = typer.Option("both", help="2.4, 5, or both.")) -> None:
 def guest_off(band: str = typer.Option("both", help="2.4, 5, or both.")) -> None:
     """Disable the guest wifi network."""
     _guest(band, False)
+
+
+@guest_app.command("schedule")
+def guest_schedule(
+    start: str = typer.Option(..., "--from", help="When the guest network turns off, e.g. 21:00."),
+    end: str = typer.Option(..., "--to", help="When it turns back on, e.g. 07:00 (may be next morning)."),
+    days: str = typer.Option("daily", help="daily, weekdays, weekends, mon-fri, sat,sun ..."),
+    band: str = typer.Option("both", help="2.4, 5, or both."),
+    name: str = typer.Option("", help="Label, e.g. guest-night."),
+) -> None:
+    """Turn the guest network off every day between two times, and back on after.
+
+    Enforced by `curfew watch` (or the watcher service) at each scan. A manual `guest on/off`
+    in between is respected until the next window boundary. Remove with `curfew schedule remove <id>`.
+    """
+    rule = _run(
+        lambda c: _async_value(
+            c.control.add_guest_schedule(start=start, end=end, days=days, band=band, name=name)
+        )
+    )
+    console.print(
+        f"#{rule.id} {rule.name}: guest wifi {rule.target} off {rule.start}-{rule.end} "
+        f"{format_days(rule.days)}"
+    )
 
 
 def _guest(band: str, enabled: bool) -> None:
@@ -877,9 +906,7 @@ def eclipse_run(
     _logging.basicConfig(level=_logging.INFO, format="%(asctime)s %(levelname)s: %(message)s")
     settings = Settings.from_env()
     try:
-        asyncio.run(
-            run_daemon(settings, interval=interval, iface=iface or None, bidirectional=not one_way)
-        )
+        asyncio.run(run_daemon(settings, interval=interval, iface=iface or None, bidirectional=not one_way))
     except PauseError as err:
         console.print(f"[red]{err}[/red]")
         raise typer.Exit(1) from err
