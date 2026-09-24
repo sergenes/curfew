@@ -97,6 +97,7 @@ uv run curfew schedule list
 uv run curfew schedule apply           # evaluate now; the watcher does this after every scan
 uv run curfew reboot                   # asks for confirmation
 uv run curfew guest on --band both
+uv run curfew guest schedule --from 21:00 --to 07:00 --name guest-night   # guest wifi off overnight
 ```
 
 Eclipse Pause (instant cutoff, no router, no subscription):
@@ -140,7 +141,8 @@ different one). `allon` lifts every pause at once.
 Blocking uses the router's Access Control feature, enabled automatically the first time.
 Its default policy for new devices is "allow all", so enabling it changes nothing by itself.
 A manual `access on|off` lasts until the target's next scheduled change, or until you flip it back if it has no schedule.
-Schedules are enforced by `curfew watch` or the launchd watcher, so install the watcher if you rely on them.
+Schedules are enforced by `curfew watch` (the launchd watcher on a Mac, a systemd service on a Linux box), which scans and then applies every schedule on each cycle, so run the watcher if you rely on them.
+Guest schedules turn the guest network off for the window and back on after it; they act only at the window's edges, so a manual `guest on` or `guest off` in between holds until the next boundary.
 Every change is appended to `~/.curfew/changes.log`.
 
 Every command takes `--json` for machine readable output.
@@ -188,7 +190,7 @@ IP entries are stored but only a future gateway mode enforces them; the DNS filt
 `.mcp.json` registers the server with Claude Code when it is started from this directory.
 Read tools: `router_status`, `list_devices`, `scan_network`, `who_is_new`, `known_devices`, `device_history`,
 `system_log`, `wifi_info`, `traffic_stats`, `check_firmware`, `list_groups`, `access_status`, `list_schedules`.
-Registry writes: `name_device`, `merge_devices`, `set_group_membership`, `add_schedule`, `remove_schedule`.
+Registry writes: `name_device`, `merge_devices`, `set_group_membership`, `add_schedule`, `add_guest_schedule`, `remove_schedule`.
 Router writes: `set_access` (group, owner or device on/off), `clear_access_control` (empty the deny list), `apply_schedules`, `set_guest_wifi`, `reboot_router` (needs `confirm=true`).
 Eclipse Pause: `pause_device`, `pause_all_except` (cut everything but a group), `resume_device`, `list_paused` (instant ARP cutoff; enforced by the `eclipse` daemon).
 Website filter: `set_filter_mode`, `set_filter_rule` (add or remove block/allow domains), `list_filters` (enforced by the `dns` daemon).
@@ -264,10 +266,30 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
 
+sudo tee /etc/systemd/system/curfew-watch.service >/dev/null <<'EOF'
+[Unit]
+Description=Curfew watcher (registry scans and schedule enforcement)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/curfew
+ExecStart=/opt/curfew/.venv/bin/curfew watch --interval 60
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
 sudo systemctl daemon-reload
-sudo systemctl enable --now curfew-eclipse curfew-dns
-journalctl -u curfew-eclipse -u curfew-dns -f
+sudo systemctl enable --now curfew-eclipse curfew-dns curfew-watch
+journalctl -u curfew-eclipse -u curfew-dns -u curfew-watch -f
 ```
+
+`curfew-watch` is what makes schedules fire: device bedtimes and guest-network schedules are applied on each of its scans.
 
 ### Pointing devices at the filter
 

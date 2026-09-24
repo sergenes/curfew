@@ -418,12 +418,35 @@ async def remove_schedule(schedule_id: int) -> dict[str, Any]:
 
 @server.tool(annotations=ROUTER_WRITE)
 async def apply_schedules() -> dict[str, Any]:
-    """Evaluate schedules and manual overrides now and push any needed allow/block changes to the router."""
+    """Evaluate schedules and manual overrides now and push any needed changes to the router.
+
+    Covers device access schedules and guest-network schedules.
+    """
     ctl = state.control()
-    await ctl.devices.scan()
-    changes = await ctl.apply_schedules()
+    _, enforced = await ctl.tick()
     now = datetime.now(UTC)
-    return {"changes": [{**_known(k, now), "access": "on" if allow else "off"} for k, allow in changes]}
+    return {
+        "changes": [{**_known(k, now), "access": "on" if allow else "off"} for k, allow in enforced.devices],
+        "guest_wifi": [{"band": b.value, "guest": "on" if on else "off"} for b, on in enforced.guest],
+    }
+
+
+@server.tool(annotations=LOCAL_WRITE)
+async def add_guest_schedule(
+    start: str, end: str, days: str = "daily", band: str = "both", name: str = ""
+) -> dict[str, Any]:
+    """Turn the guest wifi network off every day between start and end (local time), and back on after.
+
+    band: both, 2.4 or 5. days: daily, weekdays, weekends, or a list like mon-fri.
+    Enforced by the background watcher or by apply_schedules. A manual guest on/off in between is
+    respected until the next window boundary. Remove it with remove_schedule.
+    """
+    ctl = state.control()
+    try:
+        rule = ctl.add_guest_schedule(start=start, end=end, days=days, band=band, name=name)
+    except ValueError as err:
+        raise ToolError(str(err)) from err
+    return {**_model(rule), "days_text": format_days(rule.days)}
 
 
 # -- router writes ----------------------------------------------------------------
@@ -499,9 +522,7 @@ async def pause_all_except(group: str = "admin", reason: str = "") -> dict[str, 
     now = datetime.now(UTC)
     return {
         "kept_online_group": group,
-        "paused": [
-            {"mac": p.mac, "ip": p.ip, "display_name": p.display_name} for p in paused
-        ],
+        "paused": [{"mac": p.mac, "ip": p.ip, "display_name": p.display_name} for p in paused],
         "count": len(paused),
         "enforcing": ecl.enforcing(),
         "note": ""
@@ -588,9 +609,7 @@ async def list_filters(target: str = "") -> dict[str, Any]:
     return {
         "daemon_running": dns_running(state.settings.data_dir),
         "modes": [{"scope_kind": k, "scope_value": v, "mode": m} for k, v, m in svc.modes()],
-        "rules": [
-            {"scope_kind": k, "scope_value": v, "list": lk, "pattern": p} for k, v, lk, p in rules
-        ],
+        "rules": [{"scope_kind": k, "scope_value": v, "list": lk, "pattern": p} for k, v, lk, p in rules],
     }
 
 

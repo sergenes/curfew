@@ -97,6 +97,10 @@ CREATE TABLE IF NOT EXISTS filter_rules (
     UNIQUE (scope_kind, scope_value, list_kind, pattern)
 );
 CREATE INDEX IF NOT EXISTS filter_rules_scope ON filter_rules(scope_kind, scope_value);
+CREATE TABLE IF NOT EXISTS state (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 """
 
 MIGRATIONS = [
@@ -564,6 +568,25 @@ class Registry:
         with self._lock:
             row = self._db.execute("SELECT scanned_at FROM scans ORDER BY id DESC LIMIT 1").fetchone()
         return _parse(row["scanned_at"]) if row else None
+
+    # -- small persistent key/value state ----------------------------------
+
+    def get_state(self, key: str) -> str | None:
+        with self._lock:
+            row = self._db.execute("SELECT value FROM state WHERE key=?", (key,)).fetchone()
+        return row["value"] if row else None
+
+    def set_state(self, key: str, value: str) -> None:
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO state (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                (key, value),
+            )
+
+    def clear_state(self, key: str) -> None:
+        with self._lock:
+            self._db.execute("DELETE FROM state WHERE key=?", (key,))
 
     # -- DNS filter: per-scope mode and allow/deny rules ------------------
 
