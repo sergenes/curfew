@@ -778,13 +778,15 @@ def _guest(band: str, enabled: bool) -> None:
     if bands is None:
         raise typer.BadParameter("band must be 2.4, 5 or both")
 
-    console.print(
-        f"Turning guest wifi {'on' if enabled else 'off'} for {', '.join(b.value for b in bands)}. "
-        "The router restarts its radios, so every wifi network drops for up to a minute."
-    )
-    change = _run(lambda c: c.control.set_guest_wifi(bands, enabled))
-    how = "" if change.replied else " (the router dropped the connection, confirmed by re-reading)"
-    console.print(f"Guest wifi {'on' if enabled else 'off'}, confirmed after {change.seconds:.0f}s{how}")
+    async def go(c: Ctx) -> None:
+        console.print(
+            f"Turning guest wifi {'on' if enabled else 'off'} for {', '.join(b.value for b in bands)}, "
+            "one band at a time. Each switch restarts the router's radios, so every wifi network drops "
+            f"for up to a minute. This can take a few minutes. Log: {c.control.changes_log}"
+        )
+        await c.control.set_guest_wifi(bands, enabled, echo=console.print)
+
+    _run(go)
 
 
 # -- eclipse pause -------------------------------------------------------------

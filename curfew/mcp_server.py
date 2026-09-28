@@ -466,22 +466,24 @@ async def reboot_router(confirm: bool = False) -> dict[str, Any]:
 async def set_guest_wifi(enabled: bool, band: str = "both") -> dict[str, Any]:
     """Turn the guest wifi network on or off. band: 2.4, 5, or both.
 
-    The router restarts its radios to apply this, so EVERY wifi network, the main one included,
-    drops for up to a minute. The call waits until the router shows the change, which can take a while.
+    Each band's switch restarts the router's radios, so EVERY wifi network, the main one included,
+    drops for up to a minute, and the router's API stops answering for a while. Bands are switched
+    one at a time, each confirmed before the next, so this can take a few minutes.
     """
     bands = {"2.4": [Band.GHZ_2_4], "5": [Band.GHZ_5], "both": [Band.GHZ_2_4, Band.GHZ_5]}.get(band)
     if bands is None:
         raise ToolError("band must be 2.4, 5 or both")
     ctl = state.control()
     try:
-        change = await ctl.set_guest_wifi(bands, enabled)
+        switches = await ctl.set_guest_wifi(bands, enabled)
     except GuestWifiUnconfirmed as err:
         raise ToolError(str(err)) from err
     return {
         "guest_wifi": "on" if enabled else "off",
-        "bands": [b.value for b in bands],
-        "confirmed_after_s": round(change.seconds),
-        "router_replied": change.replied,
+        "bands": [
+            {"band": s.band.value, "times_sent": s.sent, "confirmed_after_s": round(s.seconds)}
+            for s in switches
+        ],
     }
 
 

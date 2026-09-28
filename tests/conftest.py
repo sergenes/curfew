@@ -48,6 +48,7 @@ class FakeRouter:
         self.responses: dict[str, Callable[[httpx.Request], httpx.Response]] = {}
         self.calls: list[str] = []
         self.session_valid = True
+        self.down = 0  # refuse this many upcoming requests, like the router while its radios restart
         mock.post(SETTINGS.soap_url).mock(side_effect=self._dispatch)
 
     def serve(self, service: str, action: str, body: str, *, status: int = 200) -> None:
@@ -58,6 +59,9 @@ class FakeRouter:
 
     def _dispatch(self, request: httpx.Request) -> httpx.Response:
         action = request.headers["SOAPAction"].removeprefix("urn:NETGEAR-ROUTER:service:")
+        if self.down > 0:
+            self.down -= 1
+            raise httpx.ConnectError("All connection attempts failed")
         self.calls.append(action)
         if action == "DeviceConfig:1#SOAPLogin":
             body = request.content.decode()
@@ -82,6 +86,7 @@ def router() -> AsyncIterator[FakeRouter]:
 @pytest.fixture
 async def client(router: FakeRouter) -> AsyncIterator[SoapClient]:
     async with SoapClient(SETTINGS) as c:
+        c.retry_delay_s = 0.0
         yield c
 
 

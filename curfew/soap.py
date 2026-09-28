@@ -124,6 +124,8 @@ def _extract_code(text: str) -> str:
 class SoapClient:
     """One authenticated session with the router. Use as an async context manager."""
 
+    retry_delay_s = 1.0  # pause before the one retry after a dropped connection
+
     def __init__(self, settings: Settings, *, http: httpx.AsyncClient | None = None) -> None:
         self.settings = settings
         self._http = http or httpx.AsyncClient(verify=False, timeout=settings.timeout_s)
@@ -188,7 +190,7 @@ class SoapClient:
             except httpx.TransportError as err:
                 # The router's TLS listener resets connections now and then; one retry clears it.
                 log.debug("transport error on %s#%s (%s), retrying once", service, action, err)
-                await asyncio.sleep(1)
+                await asyncio.sleep(self.retry_delay_s)
                 self._cookie = None
                 return await self._call_locked(service, action, params)
 

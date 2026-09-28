@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import re
-from collections.abc import Sequence
 from datetime import datetime, timedelta
 
 from curfew.models import (
@@ -331,15 +330,10 @@ async def get_guest_enabled(client: SoapClient, band: Band) -> bool | None:
     return _bool((await client.call(WLAN, action)).value("NewGuestAccessEnabled"))
 
 
-async def set_guest_wifi(client: SoapClient, bands: Sequence[Band], enabled: bool) -> None:
-    """Switch the guest network on several bands in one configuration session.
-
-    The router restarts its radios when the session is applied, dropping every SSID on them (the
-    main network too), so one session for all bands means one outage instead of one per band.
-    """
-    if not bands or any(b not in _GUEST_SET for b in bands):
-        raise ValueError(f"no guest network for bands {list(bands)}")
-    actions = [_GUEST_SET[b] for b in bands]
+async def set_guest_wifi(client: SoapClient, band: Band, enabled: bool) -> None:
+    """Switch one band's guest network. The router applies it at once and restarts its radios."""
+    action = _GUEST_SET.get(band)
+    if action is None:
+        raise ValueError(f"no guest network for band {band}")
     async with client.config_mode():
-        for action in actions:
-            await client.call(WLAN, action, {"NewGuestAccessEnabled": "1" if enabled else "0"})
+        await client.call(WLAN, action, {"NewGuestAccessEnabled": "1" if enabled else "0"})

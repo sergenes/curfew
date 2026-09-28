@@ -8,7 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -46,23 +46,27 @@ class Enforcement:
 
 
 @dataclass
-class GuestChange:
-    """A guest network switch that the router is now showing."""
+class GuestSwitch:
+    """One band's guest network, now showing the requested state on the router."""
 
-    bands: tuple[Band, ...]
+    band: Band
     enabled: bool
-    replied: bool  # False: the radio restart cut the connection, the change was confirmed by re-reading
-    seconds: float  # from sending the change to seeing it on the router
+    sent: int  # how many times the switch was sent; 0 when the band already was in that state
+    seconds: float  # from the first send until the router showed it
 
 
 class GuestWifiUnconfirmed(RuntimeError):
-    """The router dropped the connection on a guest wifi change and never showed it taking effect."""
+    """The router never showed a guest wifi change, or stopped answering altogether."""
 
 
 class ControlService:
-    # After a guest wifi change the router restarts its radios; wait this long for it to come back.
+    # A guest wifi switch takes the router's API down while its radios restart. Wait this long for it
+    # to answer again; once it answers, give the switch this long to show before sending it again;
+    # poll at this interval; and send one switch at most this many times.
     guest_confirm_timeout_s = 180.0
+    guest_settle_s = 60.0
     guest_confirm_poll_s = 5.0
+    guest_attempts = 3
 
     def __init__(self, client: SoapClient, registry: Registry, data_dir: Path) -> None:
         self.client = client
@@ -273,13 +277,10 @@ class ControlService:
             flips[wanted].append(band)
         changes: list[tuple[Band, bool]] = []
         for wanted, bands in flips.items():
-            if not bands:
-                continue
-            # Every band in one write: the router restarts its radios once, not once per band.
-            await self.set_guest_wifi(bands, wanted, reason="schedule")
-            for band in bands:
-                self.registry.set_state(f"guest_schedule:{band.value}", "on" if wanted else "off")
-                changes.append((band, wanted))
+            for switch in await self.set_guest_wifi(bands, wanted, reason="schedule") if bands else []:
+                # recorded only once the router shows it, so a lost switch is retried next pass
+                self.registry.set_state(f"guest_schedule:{switch.band.value}", "on" if wanted else "off")
+                changes.append((switch.band, wanted))
         return changes
 
     async def enforce(self, *, now: datetime | None = None) -> Enforcement:
@@ -299,51 +300,93 @@ class ControlService:
         self._log("reboot", "router", "")
         await actions.reboot(self.client)
 
-    async def set_guest_wifi(self, bands: Sequence[Band], enabled: bool, *, reason: str = "") -> GuestChange:
-        """Switch the guest network on the given bands, then re-read the router until it shows it.
+    async def set_guest_wifi(
+        self,
+        bands: Sequence[Band],
+        enabled: bool,
+        *,
+        reason: str = "",
+        echo: Callable[[str], None] | None = None,
+    ) -> list[GuestSwitch]:
+        """Switch the guest network band by band, each confirmed on the router before the next.
 
-        The router restarts its radios to apply the change, which drops every SSID on them for up
-        to a minute. When this host is on wifi, that often cuts the connection before the router
-        replies, so a dropped connection is not a failure: the router is read again until it shows
-        the new state, or until guest_confirm_timeout_s runs out.
+        The router applies a guest switch the moment it gets it: its radios restart, dropping every
+        SSID for up to a minute, and its API stops answering for a while, even over a cable. A second
+        band sent in the same breath is lost, so each band is sent on its own, and the router is read
+        until it shows the change. A band already in the wanted state is skipped, which saves a
+        restart. echo, when given, receives each log line and progress while waiting.
         """
-        bands = tuple(bands)
-        what = "+".join(b.value for b in bands)
+        return [await self._switch_guest(band, enabled, reason, echo) for band in bands]
+
+    async def _switch_guest(
+        self, band: Band, enabled: bool, reason: str, echo: Callable[[str], None] | None
+    ) -> GuestSwitch:
         want = "on" if enabled else "off"
         why = f" ({reason})" if reason else ""
-        self._log("guest-wifi", what, f"{want}{why} requested, the router restarts its radios now")
-        started = time.monotonic()
-        replied = True
-        try:
-            await actions.set_guest_wifi(self.client, bands, enabled)
-        except httpx.TransportError as err:
-            replied = False
-            self._log("guest-wifi", what, f"{want}: no reply ({type(err).__name__}), checking the router")
-        except SoapError as err:
-            self._log("guest-wifi", what, f"{want} failed: {err}")
-            raise
-        if not await self._guest_shows(bands, enabled):
-            seconds = time.monotonic() - started
-            self._log("guest-wifi", what, f"{want} NOT confirmed after {seconds:.0f}s")
-            raise GuestWifiUnconfirmed(
-                f"guest wifi {what} {want}: the router never showed the change after {seconds:.0f}s"
-            )
-        seconds = time.monotonic() - started
-        dropped = "" if replied else ", the router dropped the connection"
-        self._log("guest-wifi", what, f"{want} confirmed after {seconds:.0f}s{dropped}")
-        return GuestChange(bands, enabled, replied, seconds)
 
-    async def _guest_shows(self, bands: tuple[Band, ...], enabled: bool) -> bool:
-        deadline = time.monotonic() + self.guest_confirm_timeout_s
+        def note(detail: str) -> None:
+            self._log("guest-wifi", band.value, detail)
+            if echo:
+                echo(f"guest wifi {band.value} {detail}")
+
+        current = await self._wait_for_guest(band, None, echo)
+        if current is None:
+            note(f"{want}: router not answering after {self.guest_confirm_timeout_s:.0f}s, gave up")
+            raise GuestWifiUnconfirmed(f"guest wifi {band.value} {want}: the router stopped answering")
+        if current == enabled:
+            note(f"already {want}, nothing sent")
+            return GuestSwitch(band, enabled, 0, 0.0)
+        started = time.monotonic()
+        for sent in range(1, self.guest_attempts + 1):
+            again = f", attempt {sent}" if sent > 1 else ""
+            note(f"{want}{why} requested{again}, the router restarts its radios now")
+            try:
+                await actions.set_guest_wifi(self.client, band, enabled)
+            except httpx.TransportError as err:
+                note(f"{want}: no reply ({type(err).__name__}), waiting for the router")
+            except SoapError as err:
+                note(f"{want} failed: {err}")
+                raise
+            current = await self._wait_for_guest(band, enabled, echo)
+            if current is None:
+                note(f"{want}: router not answering after {self.guest_confirm_timeout_s:.0f}s, gave up")
+                raise GuestWifiUnconfirmed(f"guest wifi {band.value} {want}: the router stopped answering")
+            if current == enabled:
+                seconds = time.monotonic() - started
+                note(f"{want} confirmed after {seconds:.0f}s")
+                return GuestSwitch(band, enabled, sent, seconds)
+        note(f"{want} NOT confirmed after {self.guest_attempts} attempts")
+        raise GuestWifiUnconfirmed(
+            f"guest wifi {band.value} {want}: the router never showed it after {self.guest_attempts} attempts"
+        )
+
+    async def _wait_for_guest(
+        self, band: Band, wanted: bool | None, echo: Callable[[str], None] | None
+    ) -> bool | None:
+        """Read the band's guest state, waiting while the router is not answering.
+
+        With wanted set, keep reading until the router shows it, or has answered with the old state
+        for guest_settle_s. Returns the last state read, or None if the router never answered.
+        """
+        started = time.monotonic()
+        answered_at: float | None = None
         while True:
             try:
-                states = [await actions.get_guest_enabled(self.client, b) for b in bands]
-                if all(s == enabled for s in states):
-                    return True
+                current = await actions.get_guest_enabled(self.client, band)
             except (httpx.TransportError, SoapError) as err:
                 log.debug("router not answering yet: %s", err)
-            if time.monotonic() >= deadline:
-                return False
+            else:
+                if wanted is None or current == wanted:
+                    return current
+                answered_at = answered_at or time.monotonic()
+                if time.monotonic() - answered_at >= self.guest_settle_s:
+                    return current
+            waited = time.monotonic() - started
+            if answered_at is None and waited >= self.guest_confirm_timeout_s:
+                return None
+            if echo:
+                step = "answer" if answered_at is None else "apply it"
+                echo(f"  waiting for the router to {step} ({waited:.0f}s)")
             await asyncio.sleep(self.guest_confirm_poll_s)
 
     # -- audit log -------------------------------------------------------------
