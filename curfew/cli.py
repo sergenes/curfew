@@ -30,7 +30,7 @@ from curfew.pause import PauseError, build_network_info, eclipse_running
 from curfew.registry import Registry, parse_since
 from curfew.scheduler import format_days, is_active
 from curfew.services import status as status_service
-from curfew.services.control import ControlService, Enforcement
+from curfew.services.control import ControlService, Enforcement, GuestWifiUnconfirmed
 from curfew.services.devices import DeviceService, humanize
 from curfew.services.dns import DEFAULT_UPSTREAM, dns_running, run_dns
 from curfew.services.eclipse import EclipseService, run_daemon
@@ -121,7 +121,7 @@ def _run[T](fn: Callable[[Ctx], Awaitable[T]]) -> T:
     except httpx.HTTPError as err:
         console.print(f"[red]cannot reach the router: {type(err).__name__} {err}[/red]")
         raise typer.Exit(1) from err
-    except (LookupError, ValueError, PauseError) as err:
+    except (LookupError, ValueError, PauseError, GuestWifiUnconfirmed) as err:
         console.print(f"[red]{err}[/red]")
         raise typer.Exit(1) from err
 
@@ -501,8 +501,12 @@ def watch(
             started = datetime.now(UTC)
             try:
                 delta, enforced = await c.control.tick()
-            except SoapError as err:
+            except (SoapError, GuestWifiUnconfirmed) as err:
                 console.print(f"[red]{_local(started)} scan failed: {err}[/red]")
+            except httpx.HTTPError as err:
+                # The router drops connections now and then, and while a guest wifi change restarts
+                # its radios; keep watching instead of exiting.
+                console.print(f"[red]{_local(started)} router unreachable: {type(err).__name__} {err}[/red]")
             else:
                 changes = [("new", k) for k in delta.new] + [("returned", k) for k in delta.returned]
                 changes += [("left", k) for k in delta.left]
@@ -735,13 +739,13 @@ def reboot(yes: bool = typer.Option(False, "--yes", help="Skip the confirmation 
 
 @guest_app.command("on")
 def guest_on(band: str = typer.Option("both", help="2.4, 5, or both.")) -> None:
-    """Enable the guest wifi network."""
+    """Enable the guest wifi network. Every wifi network drops for up to a minute while it applies."""
     _guest(band, True)
 
 
 @guest_app.command("off")
 def guest_off(band: str = typer.Option("both", help="2.4, 5, or both.")) -> None:
-    """Disable the guest wifi network."""
+    """Disable the guest wifi network. Every wifi network drops for up to a minute while it applies."""
     _guest(band, False)
 
 
@@ -774,12 +778,13 @@ def _guest(band: str, enabled: bool) -> None:
     if bands is None:
         raise typer.BadParameter("band must be 2.4, 5 or both")
 
-    async def go(c: Ctx) -> None:
-        for b in bands:
-            await c.control.set_guest_wifi(b, enabled)
-
-    _run(go)
-    console.print(f"Guest wifi {'on' if enabled else 'off'} for {', '.join(b.value for b in bands)}")
+    console.print(
+        f"Turning guest wifi {'on' if enabled else 'off'} for {', '.join(b.value for b in bands)}. "
+        "The router restarts its radios, so every wifi network drops for up to a minute."
+    )
+    change = _run(lambda c: c.control.set_guest_wifi(bands, enabled))
+    how = "" if change.replied else " (the router dropped the connection, confirmed by re-reading)"
+    console.print(f"Guest wifi {'on' if enabled else 'off'}, confirmed after {change.seconds:.0f}s{how}")
 
 
 # -- eclipse pause -------------------------------------------------------------

@@ -13,7 +13,7 @@ import pytest
 
 from curfew.models import Band
 from curfew.registry import Registry
-from curfew.services.control import ControlService
+from curfew.services.control import ControlService, GuestWifiUnconfirmed
 from curfew.services.devices import UnknownDevice
 from curfew.soap import SoapClient
 from tests.conftest import FakeRouter, code_only, fixture_text
@@ -40,6 +40,8 @@ async def ctl(client: SoapClient, router: FakeRouter, tmp_path: Path) -> Control
         router.serve("WLANConfiguration:1", action, code_only("000"))
     registry = Registry(tmp_path / "registry.db")
     service = ControlService(client, registry, tmp_path)
+    service.guest_confirm_timeout_s = 0.0  # re-read the guest state once, no waiting in tests
+    service.guest_confirm_poll_s = 0.0
     await service.devices.scan()
     registry.set_identity(SWITCH_A, nickname="Hall", tags=["kids"], owner="Sam")
     registry.set_identity(SWITCH_B, nickname="Kitchen", tags=["kids"], owner="Alex")
@@ -133,8 +135,10 @@ async def test_manual_override_wins_over_schedule_then_expires(ctl: ControlServi
 
 
 async def test_reboot_and_guest(ctl: ControlService, router: FakeRouter) -> None:
-    await ctl.set_guest_wifi(Band.GHZ_5, True)
+    GuestWifi(router, on=False)
+    change = await ctl.set_guest_wifi([Band.GHZ_5], True)
     assert "WLANConfiguration:1#Set5GGuestAccessEnabled" in router.calls
+    assert change.replied and change.enabled
     await ctl.reboot()
     assert "DeviceConfig:1#Reboot" in router.calls
     log = ctl.changes_log.read_text()
@@ -199,6 +203,8 @@ class GuestWifi:
     def __init__(self, router: FakeRouter, *, on: bool) -> None:
         self.state = {"2.4": on, "5": on}
         self.writes: list[tuple[str, bool]] = []
+        self.drops = False  # the router applies the change but the connection dies before the reply
+        self.applies = True
         for band, get_action, set_action in (
             ("2.4", "GetGuestAccessEnabled", "SetGuestAccessEnabled"),
             ("5", "Get5GGuestAccessEnabled", "Set5GGuestAccessEnabled"),
@@ -207,6 +213,7 @@ class GuestWifi:
             router.responses[f"WLANConfiguration:1#{set_action}"] = self._setter(band)
         for action in ("GetInfo", "Get5GInfo", "GetGuestAccessNetworkInfo", "Get5GGuestAccessNetworkInfo"):
             router.serve_fixture("WLANConfiguration:1", action)
+        router.responses["DeviceConfig:1#ConfigurationFinished"] = self._finish()
 
     def _getter(self, band: str, action: str) -> Any:
         template = fixture_text(f"WLANConfiguration_{action}")
@@ -221,8 +228,18 @@ class GuestWifi:
     def _setter(self, band: str) -> Any:
         def handler(req: httpx.Request) -> httpx.Response:
             m = re.search(r"<NewGuestAccessEnabled>(\d)<", req.content.decode())
-            self.state[band] = bool(m and m.group(1) == "1")
-            self.writes.append((band, self.state[band]))
+            if self.applies:
+                self.state[band] = bool(m and m.group(1) == "1")
+            self.writes.append((band, bool(m and m.group(1) == "1")))
+            return httpx.Response(200, text=code_only("000"))
+
+        return handler
+
+    def _finish(self) -> Any:
+        def handler(_req: httpx.Request) -> httpx.Response:
+            if self.drops:
+                # applying the session restarts the radios, which cuts off a client on wifi
+                raise httpx.RemoteProtocolError("Server disconnected without sending a response.")
             return httpx.Response(200, text=code_only("000"))
 
         return handler
@@ -283,3 +300,65 @@ async def test_guest_schedule_band_and_removal(ctl: ControlService, router: Fake
     assert ctl.registry.get_state("guest_schedule:5GHz") is None  # memory cleared with the rule
     with pytest.raises(ValueError):
         ctl.add_guest_schedule(start="21:00", end="07:00", band="6")
+
+
+def config_sessions(router: FakeRouter) -> list[list[str]]:
+    """The actions sent inside each ConfigurationStarted / ConfigurationFinished pair."""
+    sessions: list[list[str]] = []
+    current: list[str] | None = None
+    for call in router.calls:
+        if call.endswith("#ConfigurationStarted"):
+            current = []
+        elif call.endswith("#ConfigurationFinished"):
+            assert current is not None
+            sessions.append(current)
+            current = None
+        elif current is not None and not call.endswith("#SOAPLogin"):
+            current.append(call.split("#")[1])
+    return sessions
+
+
+async def test_guest_both_bands_is_one_config_session(ctl: ControlService, router: FakeRouter) -> None:
+    # Each applied session restarts the radios, main network included; both bands must share one.
+    wifi = GuestWifi(router, on=True)
+    change = await ctl.set_guest_wifi([Band.GHZ_2_4, Band.GHZ_5], False)
+    assert config_sessions(router) == [["SetGuestAccessEnabled", "Set5GGuestAccessEnabled"]]
+    assert wifi.state == {"2.4": False, "5": False} and change.replied
+    lines = ctl.changes_log.read_text().splitlines()
+    assert "off requested" in lines[-2] and "off confirmed" in lines[-1]
+
+
+async def test_guest_change_confirmed_after_the_router_drops_the_connection(
+    ctl: ControlService, router: FakeRouter
+) -> None:
+    # Regression: the radio restart cut the reply, so `guest off` errored although it had worked.
+    wifi = GuestWifi(router, on=True)
+    wifi.drops = True
+    change = await ctl.set_guest_wifi([Band.GHZ_2_4, Band.GHZ_5], False)
+    assert not change.replied and wifi.state == {"2.4": False, "5": False}
+    log = ctl.changes_log.read_text()
+    assert log.index("off requested") < log.index("no reply") < log.index("off confirmed")
+
+
+async def test_guest_change_that_never_shows_raises(ctl: ControlService, router: FakeRouter) -> None:
+    wifi = GuestWifi(router, on=True)
+    wifi.drops, wifi.applies = True, False
+    with pytest.raises(GuestWifiUnconfirmed):
+        await ctl.set_guest_wifi([Band.GHZ_5], False)
+    assert "NOT confirmed" in ctl.changes_log.read_text()
+
+
+async def test_guest_schedule_switches_both_bands_in_one_session_and_retries_a_failure(
+    ctl: ControlService, router: FakeRouter
+) -> None:
+    wifi = GuestWifi(router, on=True)
+    ctl.add_guest_schedule(start="21:00", end="07:00")
+    wifi.drops, wifi.applies = True, False  # the router loses the first attempt
+    with pytest.raises(GuestWifiUnconfirmed):
+        await ctl.apply_guest_schedules(now=NIGHT)
+    assert ctl.registry.get_state("guest_schedule:2.4GHz") is None  # not recorded, so it retries
+    wifi.drops, wifi.applies = False, True
+    router.calls.clear()
+    changes = await ctl.apply_guest_schedules(now=NIGHT)
+    assert sorted((b.value, on) for b, on in changes) == [("2.4GHz", False), ("5GHz", False)]
+    assert config_sessions(router) == [["SetGuestAccessEnabled", "Set5GGuestAccessEnabled"]]

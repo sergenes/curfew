@@ -5,10 +5,15 @@ Every change is appended to <data_dir>/changes.log.
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+
+import httpx
 
 from curfew import actions
 from curfew.models import AccessChange, Band, KnownDevice, Rule, ScanDelta
@@ -26,7 +31,7 @@ from curfew.scheduler import (
     rule_applies_to,
 )
 from curfew.services.devices import DeviceService
-from curfew.soap import SoapClient
+from curfew.soap import SoapClient, SoapError
 from curfew.vendor import normalize_mac
 
 log = logging.getLogger(__name__)
@@ -40,7 +45,25 @@ class Enforcement:
     guest: list[tuple[Band, bool]] = field(default_factory=list)
 
 
+@dataclass
+class GuestChange:
+    """A guest network switch that the router is now showing."""
+
+    bands: tuple[Band, ...]
+    enabled: bool
+    replied: bool  # False: the radio restart cut the connection, the change was confirmed by re-reading
+    seconds: float  # from sending the change to seeing it on the router
+
+
+class GuestWifiUnconfirmed(RuntimeError):
+    """The router dropped the connection on a guest wifi change and never showed it taking effect."""
+
+
 class ControlService:
+    # After a guest wifi change the router restarts its radios; wait this long for it to come back.
+    guest_confirm_timeout_s = 180.0
+    guest_confirm_poll_s = 5.0
+
     def __init__(self, client: SoapClient, registry: Registry, data_dir: Path) -> None:
         self.client = client
         self.registry = registry
@@ -232,7 +255,7 @@ class ControlService:
         now = now or datetime.now(UTC)
         now_local = now.astimezone()
         rules = [r for r in self.registry.rules() if r.enabled]
-        changes: list[tuple[Band, bool]] = []
+        flips: dict[bool, list[Band]] = {True: [], False: []}
         for band in (Band.GHZ_2_4, Band.GHZ_5):
             key = f"guest_schedule:{band.value}"
             wanted = desired_guest(rules, band, now_local)
@@ -243,15 +266,20 @@ class ControlService:
             last = self.registry.get_state(key)
             if last == wanted_s:
                 continue
-            self.registry.set_state(key, wanted_s)
-            if last is None and wanted:
-                continue  # first sight outside the window: leave the guest network as it is
-            current = (await actions.get_wlan_info(self.client, band)).guest_enabled
-            if current == wanted:
+            if (last is None and wanted) or await actions.get_guest_enabled(self.client, band) == wanted:
+                # first sight outside the window leaves the guest network as it is; so does no change
+                self.registry.set_state(key, wanted_s)
                 continue
-            await actions.set_guest_wifi(self.client, band, wanted)
-            self._log("guest-wifi", band.value, f"{wanted_s} by schedule")
-            changes.append((band, wanted))
+            flips[wanted].append(band)
+        changes: list[tuple[Band, bool]] = []
+        for wanted, bands in flips.items():
+            if not bands:
+                continue
+            # Every band in one write: the router restarts its radios once, not once per band.
+            await self.set_guest_wifi(bands, wanted, reason="schedule")
+            for band in bands:
+                self.registry.set_state(f"guest_schedule:{band.value}", "on" if wanted else "off")
+                changes.append((band, wanted))
         return changes
 
     async def enforce(self, *, now: datetime | None = None) -> Enforcement:
@@ -271,9 +299,52 @@ class ControlService:
         self._log("reboot", "router", "")
         await actions.reboot(self.client)
 
-    async def set_guest_wifi(self, band: Band, enabled: bool) -> None:
-        await actions.set_guest_wifi(self.client, band, enabled)
-        self._log("guest-wifi", band.value, "on" if enabled else "off")
+    async def set_guest_wifi(self, bands: Sequence[Band], enabled: bool, *, reason: str = "") -> GuestChange:
+        """Switch the guest network on the given bands, then re-read the router until it shows it.
+
+        The router restarts its radios to apply the change, which drops every SSID on them for up
+        to a minute. When this host is on wifi, that often cuts the connection before the router
+        replies, so a dropped connection is not a failure: the router is read again until it shows
+        the new state, or until guest_confirm_timeout_s runs out.
+        """
+        bands = tuple(bands)
+        what = "+".join(b.value for b in bands)
+        want = "on" if enabled else "off"
+        why = f" ({reason})" if reason else ""
+        self._log("guest-wifi", what, f"{want}{why} requested, the router restarts its radios now")
+        started = time.monotonic()
+        replied = True
+        try:
+            await actions.set_guest_wifi(self.client, bands, enabled)
+        except httpx.TransportError as err:
+            replied = False
+            self._log("guest-wifi", what, f"{want}: no reply ({type(err).__name__}), checking the router")
+        except SoapError as err:
+            self._log("guest-wifi", what, f"{want} failed: {err}")
+            raise
+        if not await self._guest_shows(bands, enabled):
+            seconds = time.monotonic() - started
+            self._log("guest-wifi", what, f"{want} NOT confirmed after {seconds:.0f}s")
+            raise GuestWifiUnconfirmed(
+                f"guest wifi {what} {want}: the router never showed the change after {seconds:.0f}s"
+            )
+        seconds = time.monotonic() - started
+        dropped = "" if replied else ", the router dropped the connection"
+        self._log("guest-wifi", what, f"{want} confirmed after {seconds:.0f}s{dropped}")
+        return GuestChange(bands, enabled, replied, seconds)
+
+    async def _guest_shows(self, bands: tuple[Band, ...], enabled: bool) -> bool:
+        deadline = time.monotonic() + self.guest_confirm_timeout_s
+        while True:
+            try:
+                states = [await actions.get_guest_enabled(self.client, b) for b in bands]
+                if all(s == enabled for s in states):
+                    return True
+            except (httpx.TransportError, SoapError) as err:
+                log.debug("router not answering yet: %s", err)
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(self.guest_confirm_poll_s)
 
     # -- audit log -------------------------------------------------------------
 
