@@ -21,7 +21,7 @@ from curfew.models import Band, KnownDevice
 from curfew.registry import Registry, parse_since
 from curfew.scheduler import format_days, is_active
 from curfew.services import status as status_service
-from curfew.services.control import ControlService
+from curfew.services.control import ControlService, GuestWifiUnconfirmed
 from curfew.services.devices import DeviceService, humanize
 from curfew.services.dns import dns_running
 from curfew.services.eclipse import EclipseService
@@ -464,14 +464,27 @@ async def reboot_router(confirm: bool = False) -> dict[str, Any]:
 
 @server.tool(annotations=ROUTER_WRITE)
 async def set_guest_wifi(enabled: bool, band: str = "both") -> dict[str, Any]:
-    """Turn the guest wifi network on or off. band: 2.4, 5, or both."""
+    """Turn the guest wifi network on or off. band: 2.4, 5, or both.
+
+    Each band's switch restarts the router's radios, so EVERY wifi network, the main one included,
+    drops for up to a minute, and the router's API stops answering for a while. Bands are switched
+    one at a time, each confirmed before the next, so this can take a few minutes.
+    """
     bands = {"2.4": [Band.GHZ_2_4], "5": [Band.GHZ_5], "both": [Band.GHZ_2_4, Band.GHZ_5]}.get(band)
     if bands is None:
         raise ToolError("band must be 2.4, 5 or both")
     ctl = state.control()
-    for b in bands:
-        await ctl.set_guest_wifi(b, enabled)
-    return {"guest_wifi": "on" if enabled else "off", "bands": [b.value for b in bands]}
+    try:
+        switches = await ctl.set_guest_wifi(bands, enabled)
+    except GuestWifiUnconfirmed as err:
+        raise ToolError(str(err)) from err
+    return {
+        "guest_wifi": "on" if enabled else "off",
+        "bands": [
+            {"band": s.band.value, "times_sent": s.sent, "confirmed_after_s": round(s.seconds)}
+            for s in switches
+        ],
+    }
 
 
 # -- eclipse pause (instant ARP cutoff) -----------------------------------------

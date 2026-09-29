@@ -319,8 +319,20 @@ async def reboot(client: SoapClient) -> None:
         await client.call(DEVICE_CONFIG, "Reboot")
 
 
+_GUEST_SET = {Band.GHZ_2_4: "SetGuestAccessEnabled", Band.GHZ_5: "Set5GGuestAccessEnabled"}
+_GUEST_GET = {Band.GHZ_2_4: "GetGuestAccessEnabled", Band.GHZ_5: "Get5GGuestAccessEnabled"}
+
+
+async def get_guest_enabled(client: SoapClient, band: Band) -> bool | None:
+    action = _GUEST_GET.get(band)
+    if action is None:
+        raise ValueError(f"no guest network for band {band}")
+    return _bool((await client.call(WLAN, action)).value("NewGuestAccessEnabled"))
+
+
 async def set_guest_wifi(client: SoapClient, band: Band, enabled: bool) -> None:
-    action = {Band.GHZ_2_4: "SetGuestAccessEnabled", Band.GHZ_5: "Set5GGuestAccessEnabled"}.get(band)
+    """Switch one band's guest network. The router applies it at once and restarts its radios."""
+    action = _GUEST_SET.get(band)
     if action is None:
         raise ValueError(f"no guest network for band {band}")
     async with client.config_mode():
